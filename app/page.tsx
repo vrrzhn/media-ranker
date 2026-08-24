@@ -27,7 +27,7 @@ export default function Home() {
           placeholder="Search for a movie..."
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          className="border p-2 rounded text-black flex-1"
+          className="border p-2 rounded text-white flex-1"
         />
         <button
           onClick={searchMovies}

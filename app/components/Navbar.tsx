@@ -6,20 +6,44 @@ import { supabase } from '../lib/supabase'
 import { useRouter } from 'next/navigation'
 
 export default function Navbar() {
-  const [user, setUser] = useState<any>(null)
+  const [username, setUsername] = useState<string | null>(null)
   const router = useRouter()
 
-  useEffect(() => {
-    // Check initial user status
-    const getUser = async () => {
-      const { data: { user } } = await supabase.auth.getUser()
-      setUser(user)
+  const fetchProfile = async (user: any) => {
+    // 1. Check metadata set during signup
+    if (user?.user_metadata?.username) {
+      setUsername(user.user_metadata.username)
     }
-    getUser()
 
-    // Listen for auth state changes (login, logout, signup)
+    // 2. Fetch from DB profile table
+    const { data } = await supabase
+      .from('profiles')
+      .select('username')
+      .eq('id', user.id)
+      .single()
+
+    if (data?.username) {
+      setUsername(data.username)
+    }
+  }
+
+  useEffect(() => {
+    const checkUser = async () => {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (user) {
+        fetchProfile(user)
+      } else {
+        setUsername(null)
+      }
+    }
+    checkUser()
+
     const { data: authListener } = supabase.auth.onAuthStateChange((_, session) => {
-      setUser(session?.user ?? null)
+      if (session?.user) {
+        fetchProfile(session.user)
+      } else {
+        setUsername(null)
+      }
     })
 
     return () => {
@@ -29,7 +53,7 @@ export default function Navbar() {
 
   const handleLogout = async () => {
     await supabase.auth.signOut()
-    setUser(null)
+    setUsername(null)
     router.push('/login')
   }
 
@@ -40,9 +64,9 @@ export default function Navbar() {
       </Link>
 
       <div className="flex items-center gap-4">
-        {user ? (
+        {username ? (
           <>
-            <span className="text-sm text-gray-400 hidden sm:inline">{user.email}</span>
+            <span className="text-sm font-medium text-gray-200">{username}</span>
             <button
               onClick={handleLogout}
               className="bg-red-600 hover:bg-red-700 text-white text-sm px-4 py-2 rounded font-semibold transition"
