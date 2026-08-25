@@ -4,18 +4,18 @@ import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
 import { useRouter, usePathname } from 'next/navigation'
 import { supabase } from '@/app/lib/supabase'
+import { complexSearch, MediaItem } from '@/app/lib/complexSearch'
 
 export default function Navbar() {
   const router = useRouter()
   const pathname = usePathname()
-  const TMDB_API_KEY = process.env.NEXT_PUBLIC_TMDB_API_KEY
 
   // Auth State
   const [username, setUsername] = useState<string | null>(null)
 
   // Search State
   const [searchQuery, setSearchQuery] = useState('')
-  const [suggestions, setSuggestions] = useState<any[]>([])
+  const [suggestions, setSuggestions] = useState<MediaItem[]>([])
   const [isDropdownOpen, setIsDropdownOpen] = useState(false)
   const [isSearching, setIsSearching] = useState(false)
 
@@ -68,7 +68,7 @@ export default function Navbar() {
     router.push('/login')
   }
 
-  // 2. LIVE SEARCH DROPDOWN LOGIC
+  // 2. LIVE COMPLEX SEARCH DROPDOWN LOGIC
   useEffect(() => {
     if (!searchQuery.trim()) {
       setSuggestions([])
@@ -79,11 +79,8 @@ export default function Navbar() {
     const timer = setTimeout(async () => {
       setIsSearching(true)
       try {
-        const res = await fetch(
-          `https://api.themoviedb.org/3/search/movie?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(searchQuery)}`
-        )
-        const data = await res.json()
-        setSuggestions((data.results || []).slice(0, 6))
+        const results = await complexSearch(searchQuery)
+        setSuggestions(results.slice(0, 6))
         setIsDropdownOpen(true)
       } catch (err) {
         console.error('Navbar search error:', err)
@@ -93,7 +90,7 @@ export default function Navbar() {
     }, 250)
 
     return () => clearTimeout(timer)
-  }, [searchQuery, TMDB_API_KEY])
+  }, [searchQuery])
 
   // Close dropdown on click outside
   useEffect(() => {
@@ -110,11 +107,10 @@ export default function Navbar() {
     e.preventDefault()
     if (searchQuery.trim()) {
       setIsDropdownOpen(false)
-      router.push(`/?search=${encodeURIComponent(searchQuery.trim())}`)
+      router.push(`/search?q=${encodeURIComponent(searchQuery.trim())}`)
     }
   }
 
-  // Hide search bar if on the main home page
   const isHomePage = pathname === '/'
 
   return (
@@ -137,13 +133,13 @@ export default function Navbar() {
         </span>
       </Link>
 
-      {/* SEARCH BAR - VISIBLE ONLY ON MOVIE/SUB-PAGES */}
+      {/* SEARCH BAR */}
       {!isHomePage && (
         <div className="w-full max-w-md relative" ref={dropdownRef}>
           <form onSubmit={handleSearchSubmit} className="relative">
             <input
               type="text"
-              placeholder="Search movies..."
+              placeholder="Search movies, TV shows, genres (e.g., 'crime')..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onFocus={() => searchQuery.trim() && setIsDropdownOpen(true)}
@@ -166,47 +162,62 @@ export default function Navbar() {
             )}
           </form>
 
-          {/* PREDICTIVE SEARCH DROPDOWN */}
+          {/* PREDICTIVE MULTI-MEDIA SEARCH DROPDOWN */}
           {isDropdownOpen && (
             <div className="absolute top-full left-0 right-0 mt-2 bg-zinc-900/95 border border-zinc-800 rounded-2xl shadow-2xl overflow-hidden z-50 backdrop-blur-xl">
               {isSearching ? (
                 <div className="p-3 text-center text-xs text-zinc-400">Searching...</div>
               ) : suggestions.length > 0 ? (
                 <div className="divide-y divide-zinc-800/60">
-                  {suggestions.map((movie) => (
-                    <button
-                      key={movie.id}
-                      onClick={() => {
-                        setIsDropdownOpen(false)
-                        setSearchQuery('')
-                        router.push(`/movie/${movie.id}`)
-                      }}
-                      className="w-full p-2.5 flex items-center gap-3 hover:bg-zinc-800/60 transition text-left group"
-                    >
-                      {movie.poster_path ? (
-                        <img
-                          src={`https://image.tmdb.org/t/p/w92${movie.poster_path}`}
-                          alt={movie.title}
-                          className="w-8 h-12 object-cover rounded shrink-0"
-                        />
-                      ) : (
-                        <div className="w-8 h-12 bg-zinc-800 rounded shrink-0 flex items-center justify-center text-[9px] text-zinc-500">
-                          N/A
+                  {suggestions.map((item) => {
+                    const isMovie = item.media_type === 'movie'
+                    const title = isMovie ? item.title : item.name
+                    const link = isMovie ? `/movie/${item.id}` : `/tv/${item.id}`
+                    const date = item.release_date || item.first_air_date
+                    const year = date ? date.split('-')[0] : 'N/A'
+
+                    return (
+                      <button
+                        key={`${item.media_type}-${item.id}`}
+                        onClick={() => {
+                          setIsDropdownOpen(false)
+                          setSearchQuery('')
+                          router.push(link)
+                        }}
+                        className="w-full p-2.5 flex items-center gap-3 hover:bg-zinc-800/60 transition text-left group"
+                      >
+                        {item.poster_path ? (
+                          <img
+                            src={`https://image.tmdb.org/t/p/w92${item.poster_path}`}
+                            alt={title || ''}
+                            className="w-8 h-12 object-cover rounded shrink-0"
+                          />
+                        ) : (
+                          <div className="w-8 h-12 bg-zinc-800 rounded shrink-0 flex items-center justify-center text-[9px] text-zinc-500">
+                            N/A
+                          </div>
+                        )}
+                        <div className="overflow-hidden flex-1">
+                          <div className="flex items-center gap-2">
+                            <p className="font-semibold text-xs text-white group-hover:text-amber-300 transition truncate">
+                              {title}
+                            </p>
+                            <span className={`text-[9px] font-bold px-1 rounded text-white uppercase ${
+                              isMovie ? 'bg-purple-600/80' : 'bg-sky-600/80'
+                            }`}>
+                              {isMovie ? 'MOVIE' : 'TV'}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-zinc-400 mt-0.5">
+                            {year} • ⭐ {item.vote_average ? item.vote_average.toFixed(1) : 'N/A'}
+                          </p>
                         </div>
-                      )}
-                      <div className="overflow-hidden">
-                        <p className="font-semibold text-xs text-white group-hover:text-amber-300 transition truncate">
-                          {movie.title}
-                        </p>
-                        <p className="text-[11px] text-zinc-400">
-                          {movie.release_date ? movie.release_date.split('-')[0] : 'N/A'} • ⭐ {movie.vote_average ? movie.vote_average.toFixed(1) : 'N/A'}
-                        </p>
-                      </div>
-                    </button>
-                  ))}
+                      </button>
+                    )
+                  })}
                 </div>
               ) : (
-                <div className="p-3 text-center text-xs text-zinc-500">No movies found.</div>
+                <div className="p-3 text-center text-xs text-zinc-500">No results found.</div>
               )}
             </div>
           )}
