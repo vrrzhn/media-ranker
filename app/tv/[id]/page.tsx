@@ -34,9 +34,15 @@ export default function TvDetailPage() {
   const [userRating, setUserRating] = useState<number | null>(null)
   const [ratingString, setRatingString] = useState<string>('0.0')
   const [isModalOpen, setIsModalOpen] = useState(false)
-  
+
+  // Watchlist states
+  const [inWatchlist, setInWatchlist] = useState<boolean>(false)
+  const [watchlistSaving, setWatchlistSaving] = useState<boolean>(false)
+
   const [user, setUser] = useState<any>(null)
   const [saving, setSaving] = useState(false)
+
+  const [showWatchlistConfirmModal, setShowWatchlistConfirmModal] = useState<boolean>(false)
 
   const TMDB_API_KEY = process.env.NEXT_PUBLIC_TMDB_API_KEY
 
@@ -58,17 +64,30 @@ export default function TvDetailPage() {
       setUser(user)
 
       if (user) {
+        // Fetch User Rating
         const { data: existingRating } = await supabase
           .from('media')
           .select('user_rating')
           .eq('tmdb_id', Number(tvId))
           .eq('user_id', user.id)
-          .single()
+          .maybeSingle()
 
         if (existingRating && existingRating.user_rating !== null) {
           const formatted = Number(existingRating.user_rating).toFixed(1)
           setUserRating(Number(formatted))
           setRatingString(formatted)
+        }
+
+        // Fetch Watchlist Status
+        const { data: existingWatchlist } = await supabase
+          .from('watchlist')
+          .select('id')
+          .eq('tmdb_id', Number(tvId))
+          .eq('user_id', user.id)
+          .maybeSingle()
+
+        if (existingWatchlist) {
+          setInWatchlist(true)
         }
       }
     }
@@ -112,7 +131,7 @@ export default function TvDetailPage() {
         return (nextInt / 10).toFixed(1)
       })
     } else {
-      e.preventDefault() 
+      e.preventDefault()
     }
   }
 
@@ -170,6 +189,57 @@ export default function TvDetailPage() {
       console.error('Remove error:', error)
       alert('Failed to remove rating.')
     }
+  }
+
+  const executeWatchlistToggle = async () => {
+    setWatchlistSaving(true)
+
+    if (inWatchlist) {
+      const { error } = await supabase
+        .from('watchlist')
+        .delete()
+        .eq('tmdb_id', Number(tvId))
+        .eq('user_id', user.id)
+
+      if (!error) {
+        setInWatchlist(false)
+      } else {
+        console.error('Watchlist remove error:', error.message || error)
+        alert(`Failed to remove: ${error.message}`)
+      }
+    } else {
+      const { error } = await supabase.from('watchlist').insert({
+        user_id: user.id,
+        tmdb_id: Number(show.id),
+        title: show.name,
+        type: 'tv',
+        poster_path: show.poster_path || null,
+      })
+
+      if (!error) {
+        setInWatchlist(true)
+      } else {
+        console.error('Watchlist save error:', error.message || error)
+        alert(`Failed to add: ${error.message}`)
+      }
+    }
+
+    setWatchlistSaving(false)
+  }
+
+  const handleToggleWatchlist = () => {
+    if (!user) {
+      alert('Please log in to manage your watchlist.')
+      return
+    }
+
+    // Prompt warning only when ADDING an item that has already been rated
+    if (!inWatchlist && userRating !== null) {
+      setShowWatchlistConfirmModal(true)
+      return
+    }
+
+    executeWatchlistToggle()
   }
 
   if (loading) {
@@ -261,6 +331,37 @@ export default function TvDetailPage() {
         </div>
       )}
 
+      {/* WATCHLIST ALREADY RATED WARNING MODAL */}
+      {showWatchlistConfirmModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 px-4 backdrop-blur-md">
+          <div className="p-6 rounded-2xl w-full max-w-sm flex flex-col gap-4 shadow-2xl bg-zinc-900 border border-zinc-700">
+            <h3 className="text-xl font-bold text-center text-white">Already Rated</h3>
+            
+            <p className="text-sm text-zinc-300 text-center leading-relaxed">
+              You gave this show a <span className="font-bold text-yellow-400">⭐ {userRating?.toFixed(1)}/10</span>. Are you sure you want to add it to your watchlist?
+            </p>
+
+            <div className="flex gap-3 mt-2">
+              <button
+                onClick={() => setShowWatchlistConfirmModal(false)}
+                className="flex-1 bg-zinc-800 hover:bg-zinc-700 font-bold py-3 rounded-lg transition text-sm text-white border border-white/10"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  setShowWatchlistConfirmModal(false)
+                  executeWatchlistToggle()
+                }}
+                className="flex-1 bg-sky-600 hover:bg-sky-700 font-bold py-3 rounded-lg transition text-sm text-white shadow-lg"
+              >
+                Add Anyway
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Hero Backdrop Banner */}
       <div className="relative w-full h-[400px] md:h-[500px]">
         {show.backdrop_path ? (
@@ -295,7 +396,7 @@ export default function TvDetailPage() {
       {/* Main Grid */}
       <div className="max-w-6xl mx-auto px-6 mt-8 grid grid-cols-1 md:grid-cols-3 gap-8">
         
-        {/* Left Column: Poster + Where To Watch */}
+        {/* Left Column: Poster + Watchlist Button + Where To Watch */}
         <div className="flex flex-col gap-6">
           <img
             src={
@@ -306,6 +407,29 @@ export default function TvDetailPage() {
             alt={show.name}
             className="w-full rounded-xl border border-zinc-800 shadow-2xl"
           />
+
+          {/* WATCHLIST TOGGLE BUTTON */}
+          <button
+            onClick={handleToggleWatchlist}
+            disabled={watchlistSaving}
+            className={`w-full py-3.5 px-4 rounded-xl font-bold flex items-center justify-center gap-2 transition shadow-lg border ${
+              inWatchlist
+                ? 'bg-emerald-950/80 hover:bg-emerald-900/80 text-emerald-400 border-emerald-600/80'
+                : 'bg-zinc-800/90 hover:bg-zinc-700/90 text-white border-zinc-700'
+            }`}
+          >
+            {watchlistSaving ? (
+              <span>Updating...</span>
+            ) : inWatchlist ? (
+              <>
+                <span>✓</span> In Watchlist
+              </>
+            ) : (
+              <>
+                <span>+</span> Add to Watchlist
+              </>
+            )}
+          </button>
 
           {/* WHERE TO WATCH CARD */}
           <div className="bg-zinc-900/70 border border-zinc-800 rounded-xl p-5 flex flex-col gap-4">

@@ -35,7 +35,6 @@ type DropMode = 'swap' | 'before' | 'after'
 
 export default function AccountPage() {
   const router = useRouter()
-  const TMDB_API_KEY = process.env.NEXT_PUBLIC_TMDB_API_KEY
   
   const [loading, setLoading] = useState(true)
   const [user, setUser] = useState<User | null>(null)
@@ -64,29 +63,7 @@ export default function AccountPage() {
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null)
   const [dropTarget, setDropTarget] = useState<{ index: number; mode: DropMode } | null>(null)
 
-  // Helper function to enrich items with TMDB release dates if missing from database
-  const enrichMediaList = async (items: MediaItem[]): Promise<MediaItem[]> => {
-    return Promise.all(
-      items.map(async (item) => {
-        if (item.release_date || item.first_air_date) return item
-        try {
-          const mediaType = item.type === 'tv' ? 'tv' : 'movie'
-          const res = await fetch(`https://api.themoviedb.org/3/${mediaType}/${item.tmdb_id}?api_key=${TMDB_API_KEY}`)
-          const tmdbData = await res.json()
-          return {
-            ...item,
-            release_date: tmdbData.release_date || null,
-            first_air_date: tmdbData.first_air_date || null,
-            poster_path: item.poster_path || tmdbData.poster_path || null
-          }
-        } catch {
-          return item
-        }
-      })
-    )
-  }
-
-  // Fetch User Data & Enrich Dates via TMDB
+  // Fetch User Data
   useEffect(() => {
     let isMounted = true
 
@@ -119,16 +96,8 @@ export default function AccountPage() {
           setAvatarUrl(DEFAULT_BASE_AVATAR)
         }
 
-        const rawWatchlist = watchlistRes.data || []
-        const rawRatings = ratingsRes.data || []
-
-        // Enrich missing release dates via TMDB API like the Home Page
-        const enrichedWatchlist = await enrichMediaList(rawWatchlist)
-        const enrichedRatings = await enrichMediaList(rawRatings)
-
-        if (!isMounted) return
-        setWatchlist(enrichedWatchlist)
-        setRatedMedia(enrichedRatings)
+        setWatchlist(watchlistRes.data || [])
+        setRatedMedia(ratingsRes.data || [])
       } catch (err) {
         console.error('Error fetching account data:', err)
       } finally {
@@ -141,7 +110,7 @@ export default function AccountPage() {
     return () => {
       isMounted = false
     }
-  }, [router, TMDB_API_KEY])
+  }, [router])
 
   // Helper function to find rating for any media item
   const getMediaRating = (item: MediaItem): number | null => {
@@ -154,7 +123,7 @@ export default function AccountPage() {
     return match?.user_rating ?? null
   }
 
-  // Drag and Drop Logic
+  // Handle Drag & Drop Logic
   const handleDragStart = (e: DragEvent, index: number) => {
     setDraggedIndex(index)
     e.dataTransfer.effectAllowed = 'move'
@@ -227,7 +196,7 @@ export default function AccountPage() {
     setDropTarget(null)
   }
 
-  // File Selection
+  // Handle File Selection for Avatar
   const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -312,23 +281,27 @@ export default function AccountPage() {
     }
   }
 
+  // Reset Avatar
   const handleResetAvatar = () => {
     setSelectedFile(null)
     setPreviewUrl(null)
     setAvatarUrl(DEFAULT_BASE_AVATAR)
   }
 
+  // Sign Out
   const handleSignOut = async () => {
     await supabase.auth.signOut()
     router.push('/login')
   }
 
+  // Filtered Watchlist
   const filteredWatchlist = watchlist.filter((item) => {
     if (watchlistFilter === 'movies') return item.type === 'movie' || item.type !== 'tv'
     if (watchlistFilter === 'tv') return item.type === 'tv'
     return true
   })
 
+  // Filtered & Sorted Ratings
   const filteredAndSortedRatings = ratedMedia
     .filter((item) => {
       if (ratingsFilter === 'movies') return item.type === 'movie' || item.type !== 'tv'
@@ -481,8 +454,8 @@ export default function AccountPage() {
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-5">
                 {filteredWatchlist.map((item, index) => {
                   const isTv = item.type === 'tv'
-                  const date = item.release_date || item.first_air_date
-                  const releaseYear = date ? date.split('-')[0] : ''
+                  const dateStr = item.release_date || item.first_air_date || ''
+                  const releaseYear = dateStr ? dateStr.substring(0, 4) : ''
                   const isRemoving = removingId === item.id
                   const rating = getMediaRating(item)
 
@@ -503,7 +476,7 @@ export default function AccountPage() {
                         isDragging ? 'opacity-30 scale-95' : 'opacity-100'
                       }`}
                     >
-                      {/* NUMBER RANK BADGE */}
+                      {/* NUMBER RANK BADGE - ABOVE POSTER CARD */}
                       <div className="flex items-center justify-between px-0.5 mb-1.5">
                         <span className="bg-amber-400/10 text-amber-300 border border-amber-400/30 text-[11px] font-black px-2 py-0.5 rounded-md shadow-sm">
                           #{index + 1}
@@ -526,14 +499,14 @@ export default function AccountPage() {
                             : 'border-zinc-800/80 group-hover:border-zinc-600 group-hover:scale-102'
                         }`}
                       >
-                        {/* TYPE BADGE */}
+                        {/* TOP LEFT: TYPE BADGE */}
                         <div className={`pointer-events-none absolute top-2.5 left-2.5 z-20 backdrop-blur-md px-1.5 py-0.5 rounded text-[10px] font-bold text-white uppercase tracking-wider ${
                           isTv ? 'bg-sky-600/90' : 'bg-purple-600/90'
                         }`}>
                           {isTv ? 'TV' : 'MOVIE'}
                         </div>
 
-                        {/* RATING BADGE */}
+                        {/* TOP RIGHT: RATING BADGE */}
                         {rating !== null && rating !== undefined && (
                           <div className="pointer-events-none absolute top-2.5 right-2.5 z-20 bg-black/80 backdrop-blur-md px-2 py-0.5 rounded-md border border-white/10 text-[11px] font-bold text-amber-300 shadow-md">
                             ⭐ {Number(rating).toFixed(1)}
@@ -571,9 +544,11 @@ export default function AccountPage() {
                         {item.title}
                       </Link>
                       
-                      {/* YEAR ONLY (MATCHING HOME PAGE FORMAT) */}
-                      {releaseYear && (
+                      {/* YEAR ONLY (NO TYPE FALLBACK) */}
+                      {releaseYear ? (
                         <p className="text-xs text-zinc-500">{releaseYear}</p>
+                      ) : (
+                        <p className="text-xs text-zinc-600">—</p>
                       )}
 
                       <button
@@ -659,8 +634,8 @@ export default function AccountPage() {
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-5">
                 {filteredAndSortedRatings.map((item) => {
                   const isTv = item.type === 'tv'
-                  const date = item.release_date || item.first_air_date
-                  const releaseYear = date ? date.split('-')[0] : ''
+                  const dateStr = item.release_date || item.first_air_date || ''
+                  const releaseYear = dateStr ? dateStr.substring(0, 4) : ''
                   const rating = item.user_rating ? Number(item.user_rating).toFixed(1) : 'N/A'
 
                   return (
@@ -697,9 +672,11 @@ export default function AccountPage() {
                         {item.title}
                       </p>
                       
-                      {/* YEAR ONLY (MATCHING HOME PAGE FORMAT) */}
-                      {releaseYear && (
+                      {/* YEAR ONLY (NO TYPE FALLBACK) */}
+                      {releaseYear ? (
                         <p className="text-xs text-zinc-500">{releaseYear}</p>
+                      ) : (
+                        <p className="text-xs text-zinc-600">—</p>
                       )}
                     </div>
                   )

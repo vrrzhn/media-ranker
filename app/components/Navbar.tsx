@@ -228,9 +228,14 @@ export default function Navbar() {
       <div className="flex items-center gap-3 shrink-0 ml-auto">
         {username ? (
           <div className="flex items-center gap-3">
-            <span className="text-xs sm:text-sm font-semibold text-zinc-200 bg-zinc-900 border border-zinc-800 px-3.5 py-1.5 rounded-full">
+            {/* CLICKABLE ACCOUNT BUTTON */}
+            <Link
+              href="/account"
+              className="text-xs sm:text-sm font-semibold text-zinc-200 bg-zinc-900 border border-zinc-800 hover:border-amber-400/50 hover:text-amber-300 px-3.5 py-1.5 rounded-full transition duration-200 flex items-center gap-1.5 cursor-pointer"
+            >
               👤 {username}
-            </span>
+            </Link>
+            
             <button
               onClick={handleLogout}
               className="bg-rose-600/20 hover:bg-rose-600 border border-rose-500/40 hover:border-rose-600 text-rose-300 hover:text-white text-xs sm:text-sm px-4 py-1.5 rounded-full font-semibold transition duration-200"
