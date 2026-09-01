@@ -35,6 +35,12 @@ export default function TvDetailPage() {
   const [ratingString, setRatingString] = useState<string>('0.0')
   const [isModalOpen, setIsModalOpen] = useState(false)
 
+  // Notes states
+  const [userNotes, setUserNotes] = useState<string>('')
+  const [isNotesOpen, setIsNotesOpen] = useState<boolean>(false)
+  const [savingNotes, setSavingNotes] = useState<boolean>(false)
+  const [notesMsg, setNotesMsg] = useState<string | null>(null)
+
   // Watchlist states
   const [inWatchlist, setInWatchlist] = useState<boolean>(false)
   const [watchlistSaving, setWatchlistSaving] = useState<boolean>(false)
@@ -64,18 +70,29 @@ export default function TvDetailPage() {
       setUser(user)
 
       if (user) {
-        // Fetch User Rating
-        const { data: existingRating } = await supabase
+        // Fetch User Rating & Notes safely using select('*')
+        const { data: existingRating, error } = await supabase
           .from('media')
-          .select('user_rating')
+          .select('*')
           .eq('tmdb_id', Number(tvId))
           .eq('user_id', user.id)
+          .eq('type', 'tv')
           .maybeSingle()
 
-        if (existingRating && existingRating.user_rating !== null) {
-          const formatted = Number(existingRating.user_rating).toFixed(1)
-          setUserRating(Number(formatted))
-          setRatingString(formatted)
+        if (error) {
+          console.error('Error fetching rating:', error)
+        }
+
+        if (existingRating) {
+          if (existingRating.user_rating !== null && existingRating.user_rating !== undefined) {
+            const formatted = Number(existingRating.user_rating).toFixed(1)
+            setUserRating(Number(formatted))
+            setRatingString(formatted)
+          }
+
+          if (existingRating.notes) {
+            setUserNotes(existingRating.notes)
+          }
         }
 
         // Fetch Watchlist Status
@@ -150,17 +167,27 @@ export default function TvDetailPage() {
 
     const finalScore = parseFloat(ratingString)
 
-    const { error } = await supabase.from('media').upsert(
-      {
-        user_id: user.id,
-        tmdb_id: show.id,
-        title: show.name,
-        type: 'tv',
-        poster_path: show.poster_path,
-        user_rating: finalScore,
-      },
-      { onConflict: 'user_id,tmdb_id' }
-    )
+    const payload: any = {
+      user_id: user.id,
+      tmdb_id: Number(show.id),
+      title: show.name,
+      type: 'tv',
+      poster_path: show.poster_path,
+      user_rating: finalScore,
+    }
+
+    if (userNotes) {
+      payload.notes = userNotes
+    }
+
+    let { error } = await supabase.from('media').upsert(payload, { onConflict: 'user_id,tmdb_id' })
+
+    // Fallback retry if notes column is missing in Supabase schema
+    if (error && error.message?.includes('notes')) {
+      delete payload.notes
+      const retry = await supabase.from('media').upsert(payload, { onConflict: 'user_id,tmdb_id' })
+      error = retry.error
+    }
 
     setSaving(false)
     if (!error) {
@@ -168,7 +195,41 @@ export default function TvDetailPage() {
       setIsModalOpen(false)
     } else {
       console.error('Save error:', error)
-      alert('Failed to save rating.')
+      alert(`Failed to save rating: ${error.message}`)
+    }
+  }
+
+  const handleSaveNotes = async () => {
+    if (!user) {
+      alert('Please log in to save notes.')
+      return
+    }
+    setSavingNotes(true)
+    setNotesMsg(null)
+
+    const payload: any = {
+      user_id: user.id,
+      tmdb_id: Number(show.id),
+      title: show.name,
+      type: 'tv',
+      poster_path: show.poster_path,
+      user_rating: userRating,
+      notes: userNotes,
+    }
+
+    const { error } = await supabase.from('media').upsert(payload, { onConflict: 'user_id,tmdb_id' })
+
+    setSavingNotes(false)
+    if (!error) {
+      setNotesMsg('Notes saved!')
+      setTimeout(() => setNotesMsg(null), 3000)
+    } else {
+      console.error('Save notes error:', error)
+      if (error.message?.includes('notes')) {
+        alert('Could not save notes. Please ensure your Supabase "media" table has a "notes" column (text).')
+      } else {
+        alert(`Failed to save notes: ${error.message}`)
+      }
     }
   }
 
@@ -176,18 +237,34 @@ export default function TvDetailPage() {
     if (!user) return
     setSaving(true)
 
-    const { error } = await supabase
-      .from('media')
-      .delete()
-      .eq('tmdb_id', Number(tvId))
-      .eq('user_id', user.id)
-
-    setSaving(false)
-    if (!error) {
-      setUserRating(null)
+    if (userNotes && userNotes.trim()) {
+      const payload: any = {
+        user_id: user.id,
+        tmdb_id: Number(show.id),
+        title: show.name,
+        type: 'tv',
+        poster_path: show.poster_path,
+        user_rating: null,
+        notes: userNotes,
+      }
+      const { error } = await supabase.from('media').upsert(payload, { onConflict: 'user_id,tmdb_id' })
+      setSaving(false)
+      if (!error) setUserRating(null)
     } else {
-      console.error('Remove error:', error)
-      alert('Failed to remove rating.')
+      const { error } = await supabase
+        .from('media')
+        .delete()
+        .eq('tmdb_id', Number(tvId))
+        .eq('user_id', user.id)
+        .eq('type', 'tv')
+
+      setSaving(false)
+      if (!error) {
+        setUserRating(null)
+      } else {
+        console.error('Remove error:', error)
+        alert('Failed to remove rating.')
+      }
     }
   }
 
@@ -233,7 +310,6 @@ export default function TvDetailPage() {
       return
     }
 
-    // Prompt warning only when ADDING an item that has already been rated
     if (!inWatchlist && userRating !== null) {
       setShowWatchlistConfirmModal(true)
       return
@@ -250,11 +326,11 @@ export default function TvDetailPage() {
     return <div className="text-center mt-20 text-red-500">TV show not found.</div>
   }
 
-  // Certification / Age Restriction (TV Content Rating)
+  // Certification / Content Rating
   const usRating = show.content_ratings?.results?.find((r: any) => r.iso_3166_1 === 'US') || show.content_ratings?.results?.[0]
   const certification = usRating?.rating
 
-  // Videos (Main trailer + secondary clips)
+  // Videos
   const trailer = show.videos?.results?.find(
     (vid: any) => vid.site === 'YouTube' && (vid.type === 'Trailer' || vid.type === 'Teaser')
   )
@@ -383,7 +459,6 @@ export default function TvDetailPage() {
                 ({show.first_air_date.split('-')[0]})
               </span>
             )}
-            {/* Age Rating Badge */}
             {certification && (
               <span className="text-xs md:text-sm font-bold tracking-wide px-2.5 py-1 rounded border border-zinc-500 bg-zinc-900/80 text-zinc-300">
                 {certification}
@@ -396,7 +471,7 @@ export default function TvDetailPage() {
       {/* Main Grid */}
       <div className="max-w-6xl mx-auto px-6 mt-8 grid grid-cols-1 md:grid-cols-3 gap-8">
         
-        {/* Left Column: Poster + Watchlist Button + Where To Watch */}
+        {/* Left Column */}
         <div className="flex flex-col gap-6">
           <img
             src={
@@ -408,7 +483,6 @@ export default function TvDetailPage() {
             className="w-full rounded-xl border border-zinc-800 shadow-2xl"
           />
 
-          {/* WATCHLIST TOGGLE BUTTON */}
           <button
             onClick={handleToggleWatchlist}
             disabled={watchlistSaving}
@@ -431,7 +505,6 @@ export default function TvDetailPage() {
             )}
           </button>
 
-          {/* WHERE TO WATCH CARD */}
           <div className="bg-zinc-900/70 border border-zinc-800 rounded-xl p-5 flex flex-col gap-4">
             <h3 className="font-bold text-white text-base flex items-center gap-2">
               📺 Where to Watch
@@ -479,41 +552,93 @@ export default function TvDetailPage() {
           </div>
         </div>
 
-        {/* Right Column: TV Info & Details */}
+        {/* Right Column */}
         <div className="md:col-span-2 flex flex-col gap-8">
           
-          {/* USER RATING BAR */}
-          <div className={`p-6 rounded-xl border flex items-center justify-between transition-colors duration-300 ${userBoxStyle}`}>
-            <div>
-              <h3 className="font-semibold mb-1 text-current opacity-80">
-                Your Rating
-              </h3>
-              {userRating !== null ? (
-                <div className="text-3xl font-black">
-                  ⭐ {userRating.toFixed(1)} <span className="text-lg opacity-60 font-normal">/ 10</span>
-                </div>
-              ) : (
-                <div className="italic opacity-60">Not rated yet</div>
-              )}
-            </div>
-            <div className="flex flex-col items-center gap-2">
-              <button
-                onClick={handleOpenModal}
-                className="bg-zinc-800/80 hover:bg-zinc-700/80 text-white font-bold px-6 py-3 rounded-lg transition border border-white/10"
-              >
-                {userRating !== null ? 'Edit Rating' : 'Rate Show'}
-              </button>
-
-              {userRating !== null && (
+          {/* RATING BAR */}
+          <div className={`rounded-xl border transition-all duration-300 overflow-hidden ${userBoxStyle}`}>
+            <div className="p-6 flex items-center justify-between">
+              <div>
+                <h3 className="font-semibold mb-1 text-current opacity-80">
+                  Your Rating
+                </h3>
+                {userRating !== null ? (
+                  <div className="text-3xl font-black">
+                    ⭐ {userRating.toFixed(1)} <span className="text-lg opacity-60 font-normal">/ 10</span>
+                  </div>
+                ) : (
+                  <div className="italic opacity-60">Not rated yet</div>
+                )}
+              </div>
+              <div className="flex flex-col items-center gap-2">
                 <button
-                  onClick={handleRemoveRating}
-                  disabled={saving}
-                  className="text-xs text-yellow-400 hover:text-yellow-300 hover:underline font-medium transition"
+                  onClick={handleOpenModal}
+                  className="bg-zinc-800/80 hover:bg-zinc-700/80 text-white font-bold px-6 py-3 rounded-lg transition border border-white/10"
                 >
-                  Remove Rating
+                  {userRating !== null ? 'Edit Rating' : 'Rate Show'}
                 </button>
-              )}
+
+                {userRating !== null && (
+                  <button
+                    onClick={handleRemoveRating}
+                    disabled={saving}
+                    className="text-xs text-yellow-400 hover:text-yellow-300 hover:underline font-medium transition"
+                  >
+                    Remove Rating
+                  </button>
+                )}
+              </div>
             </div>
+
+            {/* ONLY DISPLAY NOTES DRAWER AND ARROW IF SHOW HAS BEEN RATED */}
+            {userRating !== null && (
+              <>
+                {/* EXPANDABLE NOTES DRAWER */}
+                {isNotesOpen && (
+                  <div className="px-6 pb-6 pt-2 border-t border-white/10 flex flex-col gap-3">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-bold uppercase tracking-wider opacity-80">
+                        Your Notes / Thoughts
+                      </label>
+                      {notesMsg && (
+                        <span className="text-xs font-semibold text-emerald-400 animate-pulse">
+                          {notesMsg}
+                        </span>
+                      )}
+                    </div>
+
+                    <textarea
+                      value={userNotes}
+                      onChange={(e) => setUserNotes(e.target.value)}
+                      placeholder="Write your review, episode notes, or thoughts here..."
+                      rows={4}
+                      className="w-full p-3 rounded-lg bg-black/60 text-white border border-white/15 text-sm focus:outline-none focus:border-white resize-y"
+                    />
+
+                    <div className="flex justify-end">
+                      <button
+                        onClick={handleSaveNotes}
+                        disabled={savingNotes}
+                        className="px-5 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs transition shadow-md disabled:opacity-50"
+                      >
+                        {savingNotes ? 'Saving...' : 'Save Notes'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* ARROW TOGGLE BUTTON AT BOTTOM */}
+                <button
+                  onClick={() => setIsNotesOpen(!isNotesOpen)}
+                  className="w-full py-2 bg-black/30 hover:bg-black/50 border-t border-white/10 flex items-center justify-center gap-2 text-xs font-semibold opacity-80 hover:opacity-100 transition"
+                >
+                  <span>{userNotes.trim() ? '📝 View Notes' : '✏️ Add Notes'}</span>
+                  <span className={`transform transition-transform duration-200 ${isNotesOpen ? 'rotate-180' : 'rotate-0'}`}>
+                    ▼
+                  </span>
+                </button>
+              </>
+            )}
           </div>
 
           {/* Metadata Badges */}
@@ -593,7 +718,6 @@ export default function TvDetailPage() {
               </div>
             )}
 
-            {/* Clips & Featurettes */}
             {secondaryVideos.length > 0 && (
               <div>
                 <h3 className="text-lg font-bold mb-3 text-zinc-300">Clips & Featurettes</h3>
@@ -619,10 +743,8 @@ export default function TvDetailPage() {
         </div>
       </div>
 
-      {/* NETFLIX-STYLE HORIZONTAL POSTER ROWS */}
+      {/* Recommendations */}
       <div className="max-w-6xl mx-auto px-6 mt-16 flex flex-col gap-12">
-        
-        {/* TV-Tied Recommendations Row */}
         {recommendations.length > 0 && (
           <div>
             <h2 className="text-2xl font-bold mb-4 text-white">
@@ -659,7 +781,6 @@ export default function TvDetailPage() {
             </div>
           </div>
         )}
-
       </div>
     </main>
   )
