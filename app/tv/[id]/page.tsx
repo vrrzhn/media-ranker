@@ -632,7 +632,7 @@ export default function TvDetailPage() {
                   onClick={() => setIsNotesOpen(!isNotesOpen)}
                   className="w-full py-2 bg-black/30 hover:bg-black/50 border-t border-white/10 flex items-center justify-center gap-2 text-xs font-semibold opacity-80 hover:opacity-100 transition"
                 >
-                  <span>{userNotes.trim() ? '📝 View Notes' : '✏️ Add Notes'}</span>
+                  <span>{userNotes.trim() ? 'View / Edit Notes' : 'Add Notes'}</span>
                   <span className={`transform transition-transform duration-200 ${isNotesOpen ? 'rotate-180' : 'rotate-0'}`}>
                     ▼
                   </span>

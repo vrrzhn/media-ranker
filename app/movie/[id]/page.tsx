@@ -28,14 +28,18 @@ export default function MovieDetailPage() {
   const movieId = params.id
 
   const [movie, setMovie] = useState<any>(null)
-  const [collectionMovies, setCollectionMovies] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
-  const [navSearchQuery, setNavSearchQuery] = useState('')
 
   // Rating states
   const [userRating, setUserRating] = useState<number | null>(null)
   const [ratingString, setRatingString] = useState<string>('0.0')
   const [isModalOpen, setIsModalOpen] = useState(false)
+
+  // Notes states
+  const [userNotes, setUserNotes] = useState<string>('')
+  const [isNotesOpen, setIsNotesOpen] = useState<boolean>(false)
+  const [savingNotes, setSavingNotes] = useState<boolean>(false)
+  const [notesMsg, setNotesMsg] = useState<string | null>(null)
 
   // Watchlist states
   const [inWatchlist, setInWatchlist] = useState<boolean>(false)
@@ -56,18 +60,6 @@ export default function MovieDetailPage() {
         )
         const data = await res.json()
         setMovie(data)
-
-        if (data.belongs_to_collection?.id) {
-          const collectionRes = await fetch(
-            `https://api.themoviedb.org/3/collection/${data.belongs_to_collection.id}?api_key=${TMDB_API_KEY}`
-          )
-          const collectionData = await collectionRes.json()
-          if (collectionData.parts) {
-            setCollectionMovies(
-              collectionData.parts.filter((item: any) => item.id !== Number(movieId))
-            )
-          }
-        }
       } catch (err) {
         console.error('Error fetching movie details:', err)
       } finally {
@@ -78,18 +70,29 @@ export default function MovieDetailPage() {
       setUser(user)
 
       if (user) {
-        // Fetch User Rating
-        const { data: existingRating } = await supabase
+        // Fetch User Rating & Notes safely using select('*')
+        const { data: existingRating, error } = await supabase
           .from('media')
-          .select('user_rating')
+          .select('*')
           .eq('tmdb_id', Number(movieId))
           .eq('user_id', user.id)
+          .eq('type', 'movie')
           .maybeSingle()
 
-        if (existingRating && existingRating.user_rating !== null) {
-          const formatted = Number(existingRating.user_rating).toFixed(1)
-          setUserRating(Number(formatted))
-          setRatingString(formatted)
+        if (error) {
+          console.error('Error fetching rating:', error)
+        }
+
+        if (existingRating) {
+          if (existingRating.user_rating !== null && existingRating.user_rating !== undefined) {
+            const formatted = Number(existingRating.user_rating).toFixed(1)
+            setUserRating(Number(formatted))
+            setRatingString(formatted)
+          }
+
+          if (existingRating.notes) {
+            setUserNotes(existingRating.notes)
+          }
         }
 
         // Fetch Watchlist Status
@@ -110,13 +113,6 @@ export default function MovieDetailPage() {
       fetchMovieData()
     }
   }, [movieId, TMDB_API_KEY])
-
-  const handleNavSearch = (e: React.FormEvent) => {
-    e.preventDefault()
-    if (navSearchQuery.trim()) {
-      router.push(`/?search=${encodeURIComponent(navSearchQuery.trim())}`)
-    }
-  }
 
   const handleRatingKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab', 'Enter'].includes(e.key)) return
@@ -171,17 +167,27 @@ export default function MovieDetailPage() {
 
     const finalScore = parseFloat(ratingString)
 
-    const { error } = await supabase.from('media').upsert(
-      {
-        user_id: user.id,
-        tmdb_id: movie.id,
-        title: movie.title,
-        type: 'movie',
-        poster_path: movie.poster_path,
-        user_rating: finalScore,
-      },
-      { onConflict: 'user_id,tmdb_id' }
-    )
+    const payload: any = {
+      user_id: user.id,
+      tmdb_id: Number(movie.id),
+      title: movie.title,
+      type: 'movie',
+      poster_path: movie.poster_path,
+      user_rating: finalScore,
+    }
+
+    if (userNotes) {
+      payload.notes = userNotes
+    }
+
+    let { error } = await supabase.from('media').upsert(payload, { onConflict: 'user_id,tmdb_id' })
+
+    // Fallback retry if notes column is missing in Supabase schema
+    if (error && error.message?.includes('notes')) {
+      delete payload.notes
+      const retry = await supabase.from('media').upsert(payload, { onConflict: 'user_id,tmdb_id' })
+      error = retry.error
+    }
 
     setSaving(false)
     if (!error) {
@@ -189,7 +195,41 @@ export default function MovieDetailPage() {
       setIsModalOpen(false)
     } else {
       console.error('Save error:', error)
-      alert('Failed to save rating.')
+      alert(`Failed to save rating: ${error.message}`)
+    }
+  }
+
+  const handleSaveNotes = async () => {
+    if (!user) {
+      alert('Please log in to save notes.')
+      return
+    }
+    setSavingNotes(true)
+    setNotesMsg(null)
+
+    const payload: any = {
+      user_id: user.id,
+      tmdb_id: Number(movie.id),
+      title: movie.title,
+      type: 'movie',
+      poster_path: movie.poster_path,
+      user_rating: userRating,
+      notes: userNotes,
+    }
+
+    const { error } = await supabase.from('media').upsert(payload, { onConflict: 'user_id,tmdb_id' })
+
+    setSavingNotes(false)
+    if (!error) {
+      setNotesMsg('Notes saved!')
+      setTimeout(() => setNotesMsg(null), 3000)
+    } else {
+      console.error('Save notes error:', error)
+      if (error.message?.includes('notes')) {
+        alert('Could not save notes. Please ensure your Supabase "media" table has a "notes" column (text).')
+      } else {
+        alert(`Failed to save notes: ${error.message}`)
+      }
     }
   }
 
@@ -197,18 +237,34 @@ export default function MovieDetailPage() {
     if (!user) return
     setSaving(true)
 
-    const { error } = await supabase
-      .from('media')
-      .delete()
-      .eq('tmdb_id', Number(movieId))
-      .eq('user_id', user.id)
-
-    setSaving(false)
-    if (!error) {
-      setUserRating(null)
+    if (userNotes && userNotes.trim()) {
+      const payload: any = {
+        user_id: user.id,
+        tmdb_id: Number(movie.id),
+        title: movie.title,
+        type: 'movie',
+        poster_path: movie.poster_path,
+        user_rating: null,
+        notes: userNotes,
+      }
+      const { error } = await supabase.from('media').upsert(payload, { onConflict: 'user_id,tmdb_id' })
+      setSaving(false)
+      if (!error) setUserRating(null)
     } else {
-      console.error('Remove error:', error)
-      alert('Failed to remove rating.')
+      const { error } = await supabase
+        .from('media')
+        .delete()
+        .eq('tmdb_id', Number(movieId))
+        .eq('user_id', user.id)
+        .eq('type', 'movie')
+
+      setSaving(false)
+      if (!error) {
+        setUserRating(null)
+      } else {
+        console.error('Remove error:', error)
+        alert('Failed to remove rating.')
+      }
     }
   }
 
@@ -254,7 +310,6 @@ export default function MovieDetailPage() {
       return
     }
 
-    // Prompt warning only when ADDING an item that has already been rated
     if (!inWatchlist && userRating !== null) {
       setShowWatchlistConfirmModal(true)
       return
@@ -271,11 +326,17 @@ export default function MovieDetailPage() {
     return <div className="text-center mt-20 text-red-500">Movie not found.</div>
   }
 
-  // Certification / Age Restriction
-  const usRelease = movie.release_dates?.results?.find((r: any) => r.iso_3166_1 === 'US') || movie.release_dates?.results?.[0]
-  const certification = usRelease?.release_dates?.find((d: any) => d.certification && d.certification !== '')?.certification
+  // Certification / Content Rating (Movie release_dates structure)
+  const usRelease = movie.release_dates?.results?.find((r: any) => r.iso_3166_1 === 'US')
+  const certification = usRelease?.release_dates?.find((d: any) => d.certification)?.certification
 
-  // Videos (Main trailer + secondary short clips/interviews)
+  // Directors
+  const directors = movie.credits?.crew
+    ?.filter((c: any) => c.job === 'Director')
+    .map((d: any) => d.name)
+    .join(', ')
+
+  // Videos
   const trailer = movie.videos?.results?.find(
     (vid: any) => vid.site === 'YouTube' && (vid.type === 'Trailer' || vid.type === 'Teaser')
   )
@@ -283,7 +344,6 @@ export default function MovieDetailPage() {
     (vid: any) => vid.site === 'YouTube' && vid.key !== trailer?.key
   ).slice(0, 4) || []
 
-  const director = movie.credits?.crew?.find((person: any) => person.job === 'Director')
   const topCast = movie.credits?.cast?.slice(0, 6) || []
 
   // Watch providers
@@ -300,6 +360,14 @@ export default function MovieDetailPage() {
   
   const currentModalRating = parseFloat(ratingString) || 0
   const modalStyle = getRatingStyle(currentModalRating, true)
+
+  // Runtime helper (e.g. 132 mins -> 2h 12m)
+  const formatRuntime = (mins: number) => {
+    if (!mins) return null
+    const h = Math.floor(mins / 60)
+    const m = mins % 60
+    return `${h}h ${m}m`
+  }
 
   return (
     <main className="min-h-screen bg-black text-white pb-16 relative">
@@ -343,7 +411,7 @@ export default function MovieDetailPage() {
               <button
                 onClick={handleSaveRating}
                 disabled={saving}
-                className="flex-1 bg-blue-600 hover:bg-blue-700 font-bold py-3 rounded-lg transition disabled:opacity-50 text-sm text-white shadow-lg"
+                className="flex-1 bg-sky-600 hover:bg-sky-700 font-bold py-3 rounded-lg transition disabled:opacity-50 text-sm text-white shadow-lg"
               >
                 {saving ? 'Saving...' : 'Save'}
               </button>
@@ -374,7 +442,7 @@ export default function MovieDetailPage() {
                   setShowWatchlistConfirmModal(false)
                   executeWatchlistToggle()
                 }}
-                className="flex-1 bg-blue-600 hover:bg-blue-700 font-bold py-3 rounded-lg transition text-sm text-white shadow-lg"
+                className="flex-1 bg-sky-600 hover:bg-sky-700 font-bold py-3 rounded-lg transition text-sm text-white shadow-lg"
               >
                 Add Anyway
               </button>
@@ -404,7 +472,6 @@ export default function MovieDetailPage() {
                 ({movie.release_date.split('-')[0]})
               </span>
             )}
-            {/* Age Rating Badge */}
             {certification && (
               <span className="text-xs md:text-sm font-bold tracking-wide px-2.5 py-1 rounded border border-zinc-500 bg-zinc-900/80 text-zinc-300">
                 {certification}
@@ -417,7 +484,7 @@ export default function MovieDetailPage() {
       {/* Main Grid */}
       <div className="max-w-6xl mx-auto px-6 mt-8 grid grid-cols-1 md:grid-cols-3 gap-8">
         
-        {/* Left Column: Poster + Watchlist Button + Where To Watch */}
+        {/* Left Column */}
         <div className="flex flex-col gap-6">
           <img
             src={
@@ -429,7 +496,6 @@ export default function MovieDetailPage() {
             className="w-full rounded-xl border border-zinc-800 shadow-2xl"
           />
 
-          {/* WATCHLIST TOGGLE BUTTON */}
           <button
             onClick={handleToggleWatchlist}
             disabled={watchlistSaving}
@@ -452,10 +518,9 @@ export default function MovieDetailPage() {
             )}
           </button>
 
-          {/* WHERE TO WATCH CARD */}
           <div className="bg-zinc-900/70 border border-zinc-800 rounded-xl p-5 flex flex-col gap-4">
             <h3 className="font-bold text-white text-base flex items-center gap-2">
-              📺 Where to Watch
+              🎬 Where to Watch
             </h3>
 
             {flatrateProviders.length > 0 && (
@@ -500,41 +565,93 @@ export default function MovieDetailPage() {
           </div>
         </div>
 
-        {/* Right Column: Movie Info & Details */}
+        {/* Right Column */}
         <div className="md:col-span-2 flex flex-col gap-8">
           
-          {/* USER RATING BAR */}
-          <div className={`p-6 rounded-xl border flex items-center justify-between transition-colors duration-300 ${userBoxStyle}`}>
-            <div>
-              <h3 className="font-semibold mb-1 text-current opacity-80">
-                Your Rating
-              </h3>
-              {userRating !== null ? (
-                <div className="text-3xl font-black">
-                  ⭐ {userRating.toFixed(1)} <span className="text-lg opacity-60 font-normal">/ 10</span>
-                </div>
-              ) : (
-                <div className="italic opacity-60">Not rated yet</div>
-              )}
-            </div>
-            <div className="flex flex-col items-center gap-2">
-              <button
-                onClick={handleOpenModal}
-                className="bg-zinc-800/80 hover:bg-zinc-700/80 text-white font-bold px-6 py-3 rounded-lg transition border border-white/10"
-              >
-                {userRating !== null ? 'Edit Rating' : 'Rate Movie'}
-              </button>
-
-              {userRating !== null && (
+          {/* RATING BAR */}
+          <div className={`rounded-xl border transition-all duration-300 overflow-hidden ${userBoxStyle}`}>
+            <div className="p-6 flex items-center justify-between">
+              <div>
+                <h3 className="font-semibold mb-1 text-current opacity-80">
+                  Your Rating
+                </h3>
+                {userRating !== null ? (
+                  <div className="text-3xl font-black">
+                    ⭐ {userRating.toFixed(1)} <span className="text-lg opacity-60 font-normal">/ 10</span>
+                  </div>
+                ) : (
+                  <div className="italic opacity-60">Not rated yet</div>
+                )}
+              </div>
+              <div className="flex flex-col items-center gap-2">
                 <button
-                  onClick={handleRemoveRating}
-                  disabled={saving}
-                  className="text-xs text-yellow-400 hover:text-yellow-300 hover:underline font-medium transition"
+                  onClick={handleOpenModal}
+                  className="bg-zinc-800/80 hover:bg-zinc-700/80 text-white font-bold px-6 py-3 rounded-lg transition border border-white/10"
                 >
-                  Remove Rating
+                  {userRating !== null ? 'Edit Rating' : 'Rate Movie'}
                 </button>
-              )}
+
+                {userRating !== null && (
+                  <button
+                    onClick={handleRemoveRating}
+                    disabled={saving}
+                    className="text-xs text-yellow-400 hover:text-yellow-300 hover:underline font-medium transition"
+                  >
+                    Remove Rating
+                  </button>
+                )}
+              </div>
             </div>
+
+            {/* ONLY DISPLAY NOTES DRAWER AND ARROW IF MOVIE HAS BEEN RATED */}
+            {userRating !== null && (
+              <>
+                {/* EXPANDABLE NOTES DRAWER */}
+                {isNotesOpen && (
+                  <div className="px-6 pb-6 pt-2 border-t border-white/10 flex flex-col gap-3">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-bold uppercase tracking-wider opacity-80">
+                        Your Notes / Thoughts
+                      </label>
+                      {notesMsg && (
+                        <span className="text-xs font-semibold text-emerald-400 animate-pulse">
+                          {notesMsg}
+                        </span>
+                      )}
+                    </div>
+
+                    <textarea
+                      value={userNotes}
+                      onChange={(e) => setUserNotes(e.target.value)}
+                      placeholder="Write your review or thoughts here..."
+                      rows={4}
+                      className="w-full p-3 rounded-lg bg-black/60 text-white border border-white/15 text-sm focus:outline-none focus:border-white resize-y"
+                    />
+
+                    <div className="flex justify-end">
+                      <button
+                        onClick={handleSaveNotes}
+                        disabled={savingNotes}
+                        className="px-5 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs transition shadow-md disabled:opacity-50"
+                      >
+                        {savingNotes ? 'Saving...' : 'Save Notes'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* ARROW TOGGLE BUTTON AT BOTTOM */}
+                <button
+                  onClick={() => setIsNotesOpen(!isNotesOpen)}
+                  className="w-full py-2 bg-black/30 hover:bg-black/50 border-t border-white/10 flex items-center justify-center gap-2 text-xs font-semibold opacity-80 hover:opacity-100 transition"
+                >
+                  <span>{userNotes.trim() ? 'View / Edit Notes' : 'Add Notes'}</span>
+                  <span className={`transform transition-transform duration-200 ${isNotesOpen ? 'rotate-180' : 'rotate-0'}`}>
+                    ▼
+                  </span>
+                </button>
+              </>
+            )}
           </div>
 
           {/* Metadata Badges */}
@@ -542,7 +659,11 @@ export default function MovieDetailPage() {
             <span className={`font-bold px-3 py-1 rounded-full border ${tmdbBadgeStyle}`}>
               TMDB: {movie.vote_average?.toFixed(1)} / 10
             </span>
-            {movie.runtime && <span className="text-gray-400">{movie.runtime} min</span>}
+            {movie.runtime > 0 && (
+              <span className="text-gray-400">
+                {formatRuntime(movie.runtime)}
+              </span>
+            )}
             <div className="flex gap-2">
               {movie.genres?.map((genre: any) => (
                 <span key={genre.id} className="bg-zinc-800 px-3 py-1 rounded-full text-xs text-white">
@@ -559,10 +680,10 @@ export default function MovieDetailPage() {
             <p className="text-gray-300 leading-relaxed">{movie.overview}</p>
           </div>
 
-          {director && (
+          {directors && (
             <div>
-              <span className="text-sm text-gray-400">Director: </span>
-              <span className="font-semibold text-white">{director.name}</span>
+              <span className="text-sm text-gray-400">Directed by: </span>
+              <span className="font-semibold text-white">{directors}</span>
             </div>
           )}
 
@@ -610,7 +731,6 @@ export default function MovieDetailPage() {
               </div>
             )}
 
-            {/* Clips, Behind the Scenes & Featurettes */}
             {secondaryVideos.length > 0 && (
               <div>
                 <h3 className="text-lg font-bold mb-3 text-zinc-300">Clips & Featurettes</h3>
@@ -636,48 +756,8 @@ export default function MovieDetailPage() {
         </div>
       </div>
 
-      {/* NETFLIX-STYLE HORIZONTAL POSTER ROWS */}
+      {/* Recommendations */}
       <div className="max-w-6xl mx-auto px-6 mt-16 flex flex-col gap-12">
-        
-        {/* Collection / Franchise Row */}
-        {collectionMovies.length > 0 && (
-          <div>
-            <h2 className="text-2xl font-bold mb-4 text-white">
-              More from {movie.belongs_to_collection.name}
-            </h2>
-            <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-thin scrollbar-thumb-zinc-800">
-              {collectionMovies.map((item: any) => (
-                <Link
-                  key={item.id}
-                  href={`/movie/${item.id}`}
-                  className="flex-none w-36 sm:w-44 group"
-                >
-                  <div className="relative aspect-[2/3] w-full rounded-xl overflow-hidden border border-zinc-800 bg-zinc-900 mb-2">
-                    {item.poster_path ? (
-                      <img
-                        src={`https://image.tmdb.org/t/p/w342${item.poster_path}`}
-                        alt={item.title}
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                      />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center text-xs text-zinc-500 p-2 text-center">
-                        No Image
-                      </div>
-                    )}
-                  </div>
-                  <p className="font-semibold text-sm truncate text-white group-hover:text-blue-400 transition-colors">
-                    {item.title}
-                  </p>
-                  <p className="text-xs text-zinc-400">
-                    ⭐ {item.vote_average ? item.vote_average.toFixed(1) : 'N/A'}
-                  </p>
-                </Link>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Movie-Tied Recommendations Row */}
         {recommendations.length > 0 && (
           <div>
             <h2 className="text-2xl font-bold mb-4 text-white">
@@ -694,7 +774,7 @@ export default function MovieDetailPage() {
                     {item.poster_path ? (
                       <img
                         src={`https://image.tmdb.org/t/p/w342${item.poster_path}`}
-                        alt={item.title}
+                        alt={item.title || item.name}
                         className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                       />
                     ) : (
@@ -703,8 +783,8 @@ export default function MovieDetailPage() {
                       </div>
                     )}
                   </div>
-                  <p className="font-semibold text-sm truncate text-white group-hover:text-blue-400 transition-colors">
-                    {item.title}
+                  <p className="font-semibold text-sm truncate text-white group-hover:text-sky-400 transition-colors">
+                    {item.title || item.name}
                   </p>
                   <p className="text-xs text-zinc-400">
                     ⭐ {item.vote_average ? item.vote_average.toFixed(1) : 'N/A'}
@@ -714,7 +794,6 @@ export default function MovieDetailPage() {
             </div>
           </div>
         )}
-
       </div>
     </main>
   )
