@@ -30,10 +30,22 @@ export default function TvDetailPage() {
   const [show, setShow] = useState<any>(null)
   const [loading, setLoading] = useState(true)
 
-  // Rating states
+  // Season & Episode states
+  const [selectedSeason, setSelectedSeason] = useState<number>(1)
+  const [seasonData, setSeasonData] = useState<any>(null)
+  const [loadingEpisodes, setLoadingEpisodes] = useState<boolean>(false)
+
+  // Main Show Rating states
   const [userRating, setUserRating] = useState<number | null>(null)
   const [ratingString, setRatingString] = useState<string>('0.0')
   const [isModalOpen, setIsModalOpen] = useState(false)
+
+  // Episode Ratings states
+  const [episodeRatings, setEpisodeRatings] = useState<Record<number, number>>({})
+  const [ratingEp, setRatingEp] = useState<any | null>(null)
+  const [epRatingString, setEpRatingString] = useState<string>('0.0')
+  const [isEpModalOpen, setIsEpModalOpen] = useState(false)
+  const [savingEpRating, setSavingEpRating] = useState(false)
 
   // Notes states
   const [userNotes, setUserNotes] = useState<string>('')
@@ -52,6 +64,7 @@ export default function TvDetailPage() {
 
   const TMDB_API_KEY = process.env.NEXT_PUBLIC_TMDB_API_KEY
 
+  // Initial Fetch: TV Details & User Data
   useEffect(() => {
     const fetchTvData = async () => {
       try {
@@ -60,6 +73,16 @@ export default function TvDetailPage() {
         )
         const data = await res.json()
         setShow(data)
+
+        if (data.seasons && data.seasons.length > 0) {
+          const sorted = [...data.seasons].sort((a: any, b: any) => {
+            if (a.season_number === 0) return 1
+            if (b.season_number === 0) return -1
+            return a.season_number - b.season_number
+          })
+          const firstValidSeason = sorted.find((s: any) => s.season_number > 0) || sorted[0]
+          setSelectedSeason(firstValidSeason.season_number)
+        }
       } catch (err) {
         console.error('Error fetching TV details:', err)
       } finally {
@@ -70,7 +93,7 @@ export default function TvDetailPage() {
       setUser(user)
 
       if (user) {
-        // Fetch User Rating & Notes safely using select('*')
+        // Fetch show rating
         const { data: existingRating, error } = await supabase
           .from('media')
           .select('*')
@@ -79,9 +102,7 @@ export default function TvDetailPage() {
           .eq('type', 'tv')
           .maybeSingle()
 
-        if (error) {
-          console.error('Error fetching rating:', error)
-        }
+        if (error) console.error('Error fetching rating:', error)
 
         if (existingRating) {
           if (existingRating.user_rating !== null && existingRating.user_rating !== undefined) {
@@ -95,7 +116,24 @@ export default function TvDetailPage() {
           }
         }
 
-        // Fetch Watchlist Status
+        // Fetch episode ratings
+        const { data: epRatingsData } = await supabase
+          .from('media')
+          .select('tmdb_id, user_rating')
+          .eq('user_id', user.id)
+          .eq('type', 'episode')
+
+        if (epRatingsData) {
+          const epMap: Record<number, number> = {}
+          epRatingsData.forEach((item: any) => {
+            if (item.user_rating !== null && item.user_rating !== undefined) {
+              epMap[item.tmdb_id] = Number(item.user_rating)
+            }
+          })
+          setEpisodeRatings(epMap)
+        }
+
+        // Fetch watchlist
         const { data: existingWatchlist } = await supabase
           .from('watchlist')
           .select('id')
@@ -114,6 +152,29 @@ export default function TvDetailPage() {
     }
   }, [tvId, TMDB_API_KEY])
 
+  // Fetch Season Data whenever selectedSeason changes
+  useEffect(() => {
+    if (!tvId || selectedSeason === null) return
+
+    const fetchSeasonEpisodes = async () => {
+      setLoadingEpisodes(true)
+      try {
+        const res = await fetch(
+          `https://api.themoviedb.org/3/tv/${tvId}/season/${selectedSeason}?api_key=${TMDB_API_KEY}`
+        )
+        const data = await res.json()
+        setSeasonData(data)
+      } catch (err) {
+        console.error('Error fetching season details:', err)
+      } finally {
+        setLoadingEpisodes(false)
+      }
+    }
+
+    fetchSeasonEpisodes()
+  }, [tvId, selectedSeason, TMDB_API_KEY])
+
+  // Keyboard handlers for Main Show Rating Input
   const handleRatingKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab', 'Enter'].includes(e.key)) return
 
@@ -152,6 +213,45 @@ export default function TvDetailPage() {
     }
   }
 
+  // Keyboard handlers for Episode Rating Input
+  const handleEpRatingKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab', 'Enter'].includes(e.key)) return
+
+    if (e.key === 'Backspace') {
+      e.preventDefault()
+      setEpRatingString((prev) => {
+        const currentInt = Math.round(parseFloat(prev) * 10)
+        const nextInt = Math.floor(currentInt / 10)
+        return (nextInt / 10).toFixed(1)
+      })
+      return
+    }
+
+    if (e.key === 'Delete') {
+      e.preventDefault()
+      setEpRatingString('0.0')
+      return
+    }
+
+    if (/^[0-9]$/.test(e.key)) {
+      e.preventDefault()
+      const digit = parseInt(e.key, 10)
+
+      setEpRatingString((prev) => {
+        const currentInt = Math.round(parseFloat(prev) * 10)
+        let nextInt = currentInt * 10 + digit
+
+        if (nextInt > 100) {
+          nextInt = nextInt % 100
+        }
+
+        return (nextInt / 10).toFixed(1)
+      })
+    } else {
+      e.preventDefault()
+    }
+  }
+
   const handleOpenModal = () => {
     if (!user) {
       alert('Please log in to rate TV shows.')
@@ -159,6 +259,17 @@ export default function TvDetailPage() {
     }
     setRatingString(userRating !== null ? userRating.toFixed(1) : '0.0')
     setIsModalOpen(true)
+  }
+
+  const handleOpenEpModal = (ep: any) => {
+    if (!user) {
+      alert('Please log in to rate episodes.')
+      return
+    }
+    setRatingEp(ep)
+    const existingEpScore = episodeRatings[ep.id]
+    setEpRatingString(existingEpScore !== undefined ? existingEpScore.toFixed(1) : '0.0')
+    setIsEpModalOpen(true)
   }
 
   const handleSaveRating = async () => {
@@ -182,7 +293,6 @@ export default function TvDetailPage() {
 
     let { error } = await supabase.from('media').upsert(payload, { onConflict: 'user_id,tmdb_id' })
 
-    // Fallback retry if notes column is missing in Supabase schema
     if (error && error.message?.includes('notes')) {
       delete payload.notes
       const retry = await supabase.from('media').upsert(payload, { onConflict: 'user_id,tmdb_id' })
@@ -196,6 +306,68 @@ export default function TvDetailPage() {
     } else {
       console.error('Save error:', error)
       alert(`Failed to save rating: ${error.message}`)
+    }
+  }
+
+  // --- FIXED: now saves show_id, season_number, episode_number so the
+  // homepage can correctly resolve the episode's air date/year ---
+  const handleSaveEpRating = async () => {
+    if (!user || !ratingEp) return
+    setSavingEpRating(true)
+
+    const finalScore = parseFloat(epRatingString)
+
+    const payload: any = {
+      user_id: user.id,
+      tmdb_id: Number(ratingEp.id),
+      title: `${show.name} - S${selectedSeason}E${ratingEp.episode_number}: ${ratingEp.name}`,
+      type: 'episode',
+      poster_path: ratingEp.still_path || show.poster_path,
+      user_rating: finalScore,
+      show_id: Number(show.id),
+      season_number: selectedSeason,
+      episode_number: ratingEp.episode_number,
+    }
+
+    const { error } = await supabase.from('media').upsert(payload, { onConflict: 'user_id,tmdb_id' })
+
+    setSavingEpRating(false)
+    if (!error) {
+      setEpisodeRatings((prev) => ({
+        ...prev,
+        [ratingEp.id]: finalScore,
+      }))
+      setIsEpModalOpen(false)
+      setRatingEp(null)
+    } else {
+      console.error('Episode rating save error:', error)
+      alert(`Failed to save episode rating: ${error.message}`)
+    }
+  }
+
+  const handleRemoveEpRating = async () => {
+    if (!user || !ratingEp) return
+    setSavingEpRating(true)
+
+    const { error } = await supabase
+      .from('media')
+      .delete()
+      .eq('tmdb_id', Number(ratingEp.id))
+      .eq('user_id', user.id)
+      .eq('type', 'episode')
+
+    setSavingEpRating(false)
+    if (!error) {
+      setEpisodeRatings((prev) => {
+        const next = { ...prev }
+        delete next[ratingEp.id]
+        return next
+      })
+      setIsEpModalOpen(false)
+      setRatingEp(null)
+    } else {
+      console.error('Remove episode rating error:', error)
+      alert('Failed to remove episode rating.')
     }
   }
 
@@ -249,7 +421,10 @@ export default function TvDetailPage() {
       }
       const { error } = await supabase.from('media').upsert(payload, { onConflict: 'user_id,tmdb_id' })
       setSaving(false)
-      if (!error) setUserRating(null)
+      if (!error) {
+        setUserRating(null)
+        setIsModalOpen(false)
+      }
     } else {
       const { error } = await supabase
         .from('media')
@@ -261,6 +436,7 @@ export default function TvDetailPage() {
       setSaving(false)
       if (!error) {
         setUserRating(null)
+        setIsModalOpen(false)
       } else {
         console.error('Remove error:', error)
         alert('Failed to remove rating.')
@@ -326,11 +502,9 @@ export default function TvDetailPage() {
     return <div className="text-center mt-20 text-red-500">TV show not found.</div>
   }
 
-  // Certification / Content Rating
   const usRating = show.content_ratings?.results?.find((r: any) => r.iso_3166_1 === 'US') || show.content_ratings?.results?.[0]
   const certification = usRating?.rating
 
-  // Videos
   const trailer = show.videos?.results?.find(
     (vid: any) => vid.site === 'YouTube' && (vid.type === 'Trailer' || vid.type === 'Teaser')
   )
@@ -341,7 +515,6 @@ export default function TvDetailPage() {
   const creators = show.created_by?.map((c: any) => c.name).join(', ')
   const topCast = show.credits?.cast?.slice(0, 6) || []
 
-  // Watch providers
   const providers = show['watch/providers']?.results?.US || show['watch/providers']?.results?.CA || Object.values(show['watch/providers']?.results || {})[0] as any
   const flatrateProviders = providers?.flatrate || []
   const rentBuyProviders = [...(providers?.rent || []), ...(providers?.buy || [])].filter(
@@ -356,10 +529,21 @@ export default function TvDetailPage() {
   const currentModalRating = parseFloat(ratingString) || 0
   const modalStyle = getRatingStyle(currentModalRating, true)
 
+  const currentEpModalRating = parseFloat(epRatingString) || 0
+  const epModalStyle = getRatingStyle(currentEpModalRating, true)
+
+  // Sort Seasons: Specials (season_number === 0) ALWAYS placed at the very end
+  const seasonsList = show.seasons || []
+  const sortedSeasons = [...seasonsList].sort((a: any, b: any) => {
+    if (a.season_number === 0) return 1
+    if (b.season_number === 0) return -1
+    return a.season_number - b.season_number
+  })
+
   return (
     <main className="min-h-screen bg-black text-white pb-16 relative">
 
-      {/* RATING MODAL OVERLAY */}
+      {/* SHOW RATING MODAL OVERLAY */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 px-4 backdrop-blur-md">
           <div className={`p-6 rounded-2xl w-full max-w-sm flex flex-col gap-4 shadow-2xl transition-all duration-300 border ${modalStyle}`}>
@@ -388,6 +572,18 @@ export default function TvDetailPage() {
               Type numbers directly. Press Backspace to undo digits. Use arrows to adjust by 0.1.
             </p>
 
+            {userRating !== null && (
+              <div className="text-center">
+                <button
+                  onClick={handleRemoveRating}
+                  disabled={saving}
+                  className="text-xs text-yellow-400 hover:text-yellow-300 hover:underline font-medium transition"
+                >
+                  Remove Rating
+                </button>
+              </div>
+            )}
+
             <div className="flex gap-3 mt-2">
               <button
                 onClick={() => setIsModalOpen(false)}
@@ -401,6 +597,71 @@ export default function TvDetailPage() {
                 className="flex-1 bg-sky-600 hover:bg-sky-700 font-bold py-3 rounded-lg transition disabled:opacity-50 text-sm text-white shadow-lg"
               >
                 {saving ? 'Saving...' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* EPISODE RATING MODAL OVERLAY */}
+      {isEpModalOpen && ratingEp && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 px-4 backdrop-blur-md">
+          <div className={`p-6 rounded-2xl w-full max-w-sm flex flex-col gap-4 shadow-2xl transition-all duration-300 border ${epModalStyle}`}>
+            <h3 className="text-lg font-bold text-center text-white line-clamp-1">
+              Rate E{ratingEp.episode_number}: {ratingEp.name}
+            </h3>
+            
+            <div className="flex items-center justify-center gap-3 my-4">
+              <input
+                type="number"
+                min="0"
+                max="10"
+                step="0.1"
+                value={epRatingString}
+                onChange={(e) => {
+                  const val = parseFloat(e.target.value)
+                  if (!isNaN(val)) {
+                    setEpRatingString(Math.min(10, Math.max(0, val)).toFixed(1))
+                  }
+                }}
+                onKeyDown={handleEpRatingKeyDown}
+                className="w-28 p-3 rounded-lg bg-black/60 text-white border border-white/20 text-center font-black text-3xl focus:outline-none focus:border-white"
+              />
+              <span className="text-gray-300 font-bold text-xl">/ 10</span>
+            </div>
+
+            <p className="text-xs text-gray-300/80 text-center">
+              Type numbers directly. Press Backspace to undo digits. Use arrows to adjust by 0.1.
+            </p>
+
+            {episodeRatings[ratingEp.id] !== undefined && (
+              <div className="text-center">
+                <button
+                  onClick={handleRemoveEpRating}
+                  disabled={savingEpRating}
+                  className="text-xs text-yellow-400 hover:text-yellow-300 hover:underline font-medium transition"
+                >
+                  Remove Episode Rating
+                </button>
+              </div>
+            )}
+
+            <div className="flex gap-3 mt-2">
+              <button
+                onClick={() => {
+                  setIsEpModalOpen(false)
+                  setRatingEp(null)
+                }}
+                className="flex-1 bg-black/40 hover:bg-black/60 font-bold py-3 rounded-lg transition text-sm text-white border border-white/10"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveEpRating}
+                disabled={savingEpRating}
+                className="flex-1 bg-sky-600 hover:bg-sky-700 font-bold py-3 rounded-lg transition disabled:opacity-50 text-sm text-white shadow-lg"
+              >
+                {savingEpRating ? 'Saving...' : 'Save'}
               </button>
             </div>
           </div>
@@ -570,23 +831,13 @@ export default function TvDetailPage() {
                   <div className="italic opacity-60">Not rated yet</div>
                 )}
               </div>
-              <div className="flex flex-col items-center gap-2">
+              <div>
                 <button
                   onClick={handleOpenModal}
                   className="bg-zinc-800/80 hover:bg-zinc-700/80 text-white font-bold px-6 py-3 rounded-lg transition border border-white/10"
                 >
                   {userRating !== null ? 'Edit Rating' : 'Rate Show'}
                 </button>
-
-                {userRating !== null && (
-                  <button
-                    onClick={handleRemoveRating}
-                    disabled={saving}
-                    className="text-xs text-yellow-400 hover:text-yellow-300 hover:underline font-medium transition"
-                  >
-                    Remove Rating
-                  </button>
-                )}
               </div>
             </div>
 
@@ -742,6 +993,149 @@ export default function TvDetailPage() {
 
         </div>
       </div>
+
+      {/* ========================================================= */}
+      {/* SEASONS & EPISODES SECTION (FULL WIDTH SINGLE COLUMN LIST) */}
+      {/* ========================================================= */}
+      {sortedSeasons.length > 0 && (
+        <div className="max-w-6xl mx-auto px-6 mt-16">
+          <h2 className="text-2xl font-black text-white mb-4">
+            🎬 Episodes & Seasons
+          </h2>
+
+          {/* STABLE SEASON SELECTOR ROW WITH HORIZONTAL SCROLL WHEEL */}
+          <div className="flex items-center gap-2 overflow-x-auto pb-3 mb-4 scrollbar-thin scrollbar-thumb-zinc-800 scrollbar-track-transparent">
+            {sortedSeasons.map((season: any) => {
+              const isActive = selectedSeason === season.season_number
+              return (
+                <button
+                  key={season.id}
+                  onClick={() => setSelectedSeason(season.season_number)}
+                  className={`px-4 py-2.5 rounded-xl text-xs font-bold transition whitespace-nowrap shrink-0 border ${
+                    isActive
+                      ? 'bg-sky-500 text-black border-sky-400 shadow-lg shadow-sky-500/20'
+                      : 'bg-zinc-900 text-zinc-400 hover:text-white border-zinc-800 hover:border-zinc-700'
+                  }`}
+                >
+                  {season.name} ({season.episode_count} Ep)
+                </button>
+              )
+            })}
+          </div>
+
+          {/* SEASON BIO / OVERVIEW */}
+          {seasonData?.overview && seasonData.overview.trim().length > 0 && (
+            <div className="mb-6 p-4 rounded-xl bg-zinc-900/60 border border-zinc-800 text-zinc-300 text-sm leading-relaxed">
+              <span className="font-bold text-sky-400 block mb-1">
+                {seasonData.name} Overview:
+              </span>
+              {seasonData.overview}
+            </div>
+          )}
+
+          {/* SCROLLABLE EPISODE VIEWPORT */}
+          {loadingEpisodes ? (
+            <div className="flex flex-col gap-3 animate-pulse">
+              {[1, 2, 3, 4].map((n) => (
+                <div key={n} className="h-32 bg-zinc-900 rounded-xl border border-zinc-800" />
+              ))}
+            </div>
+          ) : seasonData?.episodes && seasonData.episodes.length > 0 ? (
+            <div className="max-h-[680px] overflow-y-auto pr-2 scrollbar-thin scrollbar-thumb-zinc-800 scrollbar-track-zinc-950/40 rounded-xl border border-zinc-800/50 p-1">
+              <div className="flex flex-col gap-3">
+                {seasonData.episodes.map((ep: any) => {
+                  const epUserRating = episodeRatings[ep.id] ?? null
+                  const epCardStyle =
+                    epUserRating !== null
+                      ? getRatingStyle(epUserRating)
+                      : 'bg-zinc-900/60 hover:bg-zinc-900 border-zinc-800/80 hover:border-zinc-700'
+
+                  const epTmdbBadgeStyle = getRatingStyle(
+                    ep.vote_average ? Number(ep.vote_average.toFixed(1)) : null
+                  )
+
+                  return (
+                    <div
+                      key={ep.id}
+                      className={`border rounded-xl p-4 transition-all duration-200 flex flex-col sm:flex-row gap-4 items-start sm:items-center group ${epCardStyle}`}
+                    >
+                      {/* Episode Still Image */}
+                      <div className="relative w-full sm:w-52 h-32 flex-none rounded-lg overflow-hidden bg-zinc-950 border border-zinc-800">
+                        {ep.still_path ? (
+                          <img
+                            src={`https://image.tmdb.org/t/p/w300${ep.still_path}`}
+                            alt={ep.name}
+                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                          />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-xs text-zinc-600 font-medium">
+                            No Thumbnail
+                          </div>
+                        )}
+                        <span className="absolute bottom-2 left-2 bg-black/80 backdrop-blur-md px-2 py-0.5 rounded text-[10px] font-mono font-bold text-sky-400 border border-white/10">
+                          E{ep.episode_number < 10 ? `0${ep.episode_number}` : ep.episode_number}
+                        </span>
+                      </div>
+
+                      {/* Episode Details */}
+                      <div className="flex flex-col justify-between flex-grow overflow-hidden w-full h-full min-h-[110px]">
+                        
+                        {/* Top Row: Title + Rate Button */}
+                        <div className="flex items-start justify-between gap-3 mb-1.5">
+                          <h4 className="font-bold text-base text-white group-hover:text-sky-400 transition-colors line-clamp-1">
+                            {ep.episode_number}. {ep.name}
+                          </h4>
+
+                          {/* TOP RIGHT RATE BUTTON */}
+                          <button
+                            onClick={() => handleOpenEpModal(ep)}
+                            className="px-3 py-1 rounded-lg bg-zinc-800/90 hover:bg-zinc-700 text-xs font-bold text-white border border-white/10 transition shrink-0 shadow-sm flex items-center gap-1"
+                          >
+                            {epUserRating !== null ? (
+                              <span className="text-amber-300 font-black">⭐ {epUserRating.toFixed(1)}</span>
+                            ) : (
+                              <span>+ Rate</span>
+                            )}
+                          </button>
+                        </div>
+
+                        {/* Overview */}
+                        <p className="text-xs sm:text-sm text-zinc-300 line-clamp-2 sm:line-clamp-3 leading-relaxed mb-3">
+                          {ep.overview || 'No description available for this episode.'}
+                        </p>
+
+                        {/* Bottom Row: Air Date, Runtime + Bottom Right Color-Coded TMDB Rating */}
+                        <div className="flex items-center justify-between gap-2 text-xs font-medium mt-auto pt-1">
+                          <div className="flex items-center gap-4 text-zinc-400">
+                            {ep.air_date && <span>📅 {ep.air_date}</span>}
+                            {ep.runtime && <span>⏱️ {ep.runtime} min</span>}
+                          </div>
+
+                          {/* BOTTOM RIGHT COLOR-CODED TMDB RATING */}
+                          {ep.vote_average > 0 ? (
+                            <span className={`text-[11px] font-bold px-2 py-0.5 rounded border shrink-0 ${epTmdbBadgeStyle}`}>
+                              TMDB: {ep.vote_average.toFixed(1)}
+                            </span>
+                          ) : (
+                            <span className="text-[11px] text-zinc-500 font-medium shrink-0">
+                              TMDB: N/A
+                            </span>
+                          )}
+                        </div>
+
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          ) : (
+            <div className="text-center py-12 text-zinc-500 italic bg-zinc-900/30 rounded-xl border border-zinc-800">
+              No episode details found for this season.
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Recommendations */}
       <div className="max-w-6xl mx-auto px-6 mt-16 flex flex-col gap-12">
