@@ -42,6 +42,11 @@ export default function TvDetailPage() {
 
   // Episode Ratings states
   const [episodeRatings, setEpisodeRatings] = useState<Record<number, number>>({})
+  const [ratedShowEpisodes, setRatedShowEpisodes] = useState<any[]>([])
+  const [isEpisodesSectionOpen, setIsEpisodesSectionOpen] = useState<boolean>(false)
+  const [episodeSort, setEpisodeSort] = useState<
+    'rating_desc' | 'rating_asc' | 'release_asc' | 'release_desc' | 'rated_recent' | 'rated_oldest'
+  >('release_asc')
   const [ratingEp, setRatingEp] = useState<any | null>(null)
   const [epRatingString, setEpRatingString] = useState<string>('0.0')
   const [isEpModalOpen, setIsEpModalOpen] = useState(false)
@@ -131,6 +136,21 @@ export default function TvDetailPage() {
             }
           })
           setEpisodeRatings(epMap)
+        }
+
+        // Fetch full rows for episodes rated on THIS show specifically
+        const { data: showEpRatings } = await supabase
+          .from('media')
+          .select('*')
+          .eq('user_id', user.id)
+          .eq('type', 'episode')
+          .eq('show_id', Number(tvId))
+          .not('user_rating', 'is', null)
+          .order('season_number', { ascending: true })
+          .order('episode_number', { ascending: true })
+
+        if (showEpRatings) {
+          setRatedShowEpisodes(showEpRatings)
         }
 
         // Fetch watchlist
@@ -337,6 +357,16 @@ export default function TvDetailPage() {
         ...prev,
         [ratingEp.id]: finalScore,
       }))
+
+      setRatedShowEpisodes((prev) => {
+        const withoutThis = prev.filter((e) => e.tmdb_id !== payload.tmdb_id)
+        const updated = [...withoutThis, payload]
+        return updated.sort((a, b) => {
+          if (a.season_number !== b.season_number) return a.season_number - b.season_number
+          return a.episode_number - b.episode_number
+        })
+      })
+
       setIsEpModalOpen(false)
       setRatingEp(null)
     } else {
@@ -363,6 +393,7 @@ export default function TvDetailPage() {
         delete next[ratingEp.id]
         return next
       })
+      setRatedShowEpisodes((prev) => prev.filter((e) => e.tmdb_id !== Number(ratingEp.id)))
       setIsEpModalOpen(false)
       setRatingEp(null)
     } else {
@@ -539,6 +570,34 @@ export default function TvDetailPage() {
     if (b.season_number === 0) return -1
     return a.season_number - b.season_number
   })
+
+  // Sort your rated episodes for this show based on the selected sort option
+  const sortedRatedEpisodes = [...ratedShowEpisodes].sort((a: any, b: any) => {
+    switch (episodeSort) {
+      case 'rating_desc':
+        return Number(b.user_rating) - Number(a.user_rating)
+      case 'rating_asc':
+        return Number(a.user_rating) - Number(b.user_rating)
+      case 'release_desc':
+        return (b.season_number - a.season_number) || (b.episode_number - a.episode_number)
+      case 'rated_recent':
+        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      case 'rated_oldest':
+        return new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+      case 'release_asc':
+      default:
+        return (a.season_number - b.season_number) || (a.episode_number - b.episode_number)
+    }
+  })
+
+  const episodeSortOptions: { value: typeof episodeSort; label: string }[] = [
+    { value: 'release_asc', label: 'Release Order (Oldest First)' },
+    { value: 'release_desc', label: 'Release Order (Newest First)' },
+    { value: 'rating_desc', label: 'Your Rating (Highest First)' },
+    { value: 'rating_asc', label: 'Your Rating (Lowest First)' },
+    { value: 'rated_recent', label: 'Date Rated (Most Recent)' },
+    { value: 'rated_oldest', label: 'Date Rated (Oldest First)' },
+  ]
 
   return (
     <main className="min-h-screen bg-black text-white pb-16 relative">
@@ -995,144 +1054,223 @@ export default function TvDetailPage() {
       </div>
 
       {/* ========================================================= */}
-      {/* SEASONS & EPISODES SECTION (FULL WIDTH SINGLE COLUMN LIST) */}
+      {/* EPISODES & SEASONS (COLLAPSIBLE) */}
       {/* ========================================================= */}
       {sortedSeasons.length > 0 && (
         <div className="max-w-6xl mx-auto px-6 mt-16">
-          <h2 className="text-2xl font-black text-white mb-4">
-            🎬 Episodes & Seasons
-          </h2>
+          {/* COLLAPSIBLE HEADER */}
+          <button
+            onClick={() => setIsEpisodesSectionOpen((prev) => !prev)}
+            className="w-full flex items-center justify-between gap-4 mb-4 group focus:outline-none"
+          >
+            <h2 className="text-2xl font-black text-white flex items-center gap-2">
+              🎬 Episodes & Seasons
+            </h2>
+            <span className={`text-2xl text-zinc-400 group-hover:text-white transition-transform duration-200 ${isEpisodesSectionOpen ? 'rotate-180' : 'rotate-0'}`}>
+              ▼
+            </span>
+          </button>
 
-          {/* STABLE SEASON SELECTOR ROW WITH HORIZONTAL SCROLL WHEEL */}
-          <div className="flex items-center gap-2 overflow-x-auto pb-3 mb-4 scrollbar-thin scrollbar-thumb-zinc-800 scrollbar-track-transparent">
-            {sortedSeasons.map((season: any) => {
-              const isActive = selectedSeason === season.season_number
-              return (
-                <button
-                  key={season.id}
-                  onClick={() => setSelectedSeason(season.season_number)}
-                  className={`px-4 py-2.5 rounded-xl text-xs font-bold transition whitespace-nowrap shrink-0 border ${
-                    isActive
-                      ? 'bg-sky-500 text-black border-sky-400 shadow-lg shadow-sky-500/20'
-                      : 'bg-zinc-900 text-zinc-400 hover:text-white border-zinc-800 hover:border-zinc-700'
-                  }`}
-                >
-                  {season.name} ({season.episode_count} Ep)
-                </button>
-              )
-            })}
-          </div>
-
-          {/* SEASON BIO / OVERVIEW */}
-          {seasonData?.overview && seasonData.overview.trim().length > 0 && (
-            <div className="mb-6 p-4 rounded-xl bg-zinc-900/60 border border-zinc-800 text-zinc-300 text-sm leading-relaxed">
-              <span className="font-bold text-sky-400 block mb-1">
-                {seasonData.name} Overview:
-              </span>
-              {seasonData.overview}
-            </div>
-          )}
-
-          {/* SCROLLABLE EPISODE VIEWPORT */}
-          {loadingEpisodes ? (
-            <div className="flex flex-col gap-3 animate-pulse">
-              {[1, 2, 3, 4].map((n) => (
-                <div key={n} className="h-32 bg-zinc-900 rounded-xl border border-zinc-800" />
-              ))}
-            </div>
-          ) : seasonData?.episodes && seasonData.episodes.length > 0 ? (
-            <div className="max-h-[680px] overflow-y-auto pr-2 scrollbar-thin scrollbar-thumb-zinc-800 scrollbar-track-zinc-950/40 rounded-xl border border-zinc-800/50 p-1">
-              <div className="flex flex-col gap-3">
-                {seasonData.episodes.map((ep: any) => {
-                  const epUserRating = episodeRatings[ep.id] ?? null
-                  const epCardStyle =
-                    epUserRating !== null
-                      ? getRatingStyle(epUserRating)
-                      : 'bg-zinc-900/60 hover:bg-zinc-900 border-zinc-800/80 hover:border-zinc-700'
-
-                  const epTmdbBadgeStyle = getRatingStyle(
-                    ep.vote_average ? Number(ep.vote_average.toFixed(1)) : null
-                  )
-
+          {isEpisodesSectionOpen && (
+            <>
+              {/* STABLE SEASON SELECTOR ROW WITH HORIZONTAL SCROLL WHEEL */}
+              <div className="flex items-center gap-2 overflow-x-auto pb-3 mb-4 scrollbar-thin scrollbar-thumb-zinc-800 scrollbar-track-transparent">
+                {sortedSeasons.map((season: any) => {
+                  const isActive = selectedSeason === season.season_number
                   return (
-                    <div
-                      key={ep.id}
-                      className={`border rounded-xl p-4 transition-all duration-200 flex flex-col sm:flex-row gap-4 items-start sm:items-center group ${epCardStyle}`}
+                    <button
+                      key={season.id}
+                      onClick={() => setSelectedSeason(season.season_number)}
+                      className={`px-4 py-2.5 rounded-xl text-xs font-bold transition whitespace-nowrap shrink-0 border ${
+                        isActive
+                          ? 'bg-sky-500 text-black border-sky-400 shadow-lg shadow-sky-500/20'
+                          : 'bg-zinc-900 text-zinc-400 hover:text-white border-zinc-800 hover:border-zinc-700'
+                      }`}
                     >
-                      {/* Episode Still Image */}
-                      <div className="relative w-full sm:w-52 h-32 flex-none rounded-lg overflow-hidden bg-zinc-950 border border-zinc-800">
-                        {ep.still_path ? (
-                          <img
-                            src={`https://image.tmdb.org/t/p/w300${ep.still_path}`}
-                            alt={ep.name}
-                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                          />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center text-xs text-zinc-600 font-medium">
-                            No Thumbnail
-                          </div>
-                        )}
-                        <span className="absolute bottom-2 left-2 bg-black/80 backdrop-blur-md px-2 py-0.5 rounded text-[10px] font-mono font-bold text-sky-400 border border-white/10">
-                          E{ep.episode_number < 10 ? `0${ep.episode_number}` : ep.episode_number}
-                        </span>
-                      </div>
-
-                      {/* Episode Details */}
-                      <div className="flex flex-col justify-between flex-grow overflow-hidden w-full h-full min-h-[110px]">
-                        
-                        {/* Top Row: Title + Rate Button */}
-                        <div className="flex items-start justify-between gap-3 mb-1.5">
-                          <h4 className="font-bold text-base text-white group-hover:text-sky-400 transition-colors line-clamp-1">
-                            {ep.episode_number}. {ep.name}
-                          </h4>
-
-                          {/* TOP RIGHT RATE BUTTON */}
-                          <button
-                            onClick={() => handleOpenEpModal(ep)}
-                            className="px-3 py-1 rounded-lg bg-zinc-800/90 hover:bg-zinc-700 text-xs font-bold text-white border border-white/10 transition shrink-0 shadow-sm flex items-center gap-1"
-                          >
-                            {epUserRating !== null ? (
-                              <span className="text-amber-300 font-black">⭐ {epUserRating.toFixed(1)}</span>
-                            ) : (
-                              <span>+ Rate</span>
-                            )}
-                          </button>
-                        </div>
-
-                        {/* Overview */}
-                        <p className="text-xs sm:text-sm text-zinc-300 line-clamp-2 sm:line-clamp-3 leading-relaxed mb-3">
-                          {ep.overview || 'No description available for this episode.'}
-                        </p>
-
-                        {/* Bottom Row: Air Date, Runtime + Bottom Right Color-Coded TMDB Rating */}
-                        <div className="flex items-center justify-between gap-2 text-xs font-medium mt-auto pt-1">
-                          <div className="flex items-center gap-4 text-zinc-400">
-                            {ep.air_date && <span>📅 {ep.air_date}</span>}
-                            {ep.runtime && <span>⏱️ {ep.runtime} min</span>}
-                          </div>
-
-                          {/* BOTTOM RIGHT COLOR-CODED TMDB RATING */}
-                          {ep.vote_average > 0 ? (
-                            <span className={`text-[11px] font-bold px-2 py-0.5 rounded border shrink-0 ${epTmdbBadgeStyle}`}>
-                              TMDB: {ep.vote_average.toFixed(1)}
-                            </span>
-                          ) : (
-                            <span className="text-[11px] text-zinc-500 font-medium shrink-0">
-                              TMDB: N/A
-                            </span>
-                          )}
-                        </div>
-
-                      </div>
-                    </div>
+                      {season.name} ({season.episode_count} Ep)
+                    </button>
                   )
                 })}
               </div>
-            </div>
-          ) : (
-            <div className="text-center py-12 text-zinc-500 italic bg-zinc-900/30 rounded-xl border border-zinc-800">
-              No episode details found for this season.
-            </div>
+
+              {/* SEASON BIO / OVERVIEW */}
+              {seasonData?.overview && seasonData.overview.trim().length > 0 && (
+                <div className="mb-6 p-4 rounded-xl bg-zinc-900/60 border border-zinc-800 text-zinc-300 text-sm leading-relaxed">
+                  <span className="font-bold text-sky-400 block mb-1">
+                    {seasonData.name} Overview:
+                  </span>
+                  {seasonData.overview}
+                </div>
+              )}
+
+              {/* SCROLLABLE EPISODE VIEWPORT */}
+              {loadingEpisodes ? (
+                <div className="flex flex-col gap-3 animate-pulse">
+                  {[1, 2, 3, 4].map((n) => (
+                    <div key={n} className="h-32 bg-zinc-900 rounded-xl border border-zinc-800" />
+                  ))}
+                </div>
+              ) : seasonData?.episodes && seasonData.episodes.length > 0 ? (
+                <div className="max-h-[680px] overflow-y-auto pr-2 scrollbar-thin scrollbar-thumb-zinc-800 scrollbar-track-zinc-950/40 rounded-xl border border-zinc-800/50 p-1">
+                  <div className="flex flex-col gap-3">
+                    {seasonData.episodes.map((ep: any) => {
+                      const epUserRating = episodeRatings[ep.id] ?? null
+                      const epCardStyle =
+                        epUserRating !== null
+                          ? getRatingStyle(epUserRating)
+                          : 'bg-zinc-900/60 hover:bg-zinc-900 border-zinc-800/80 hover:border-zinc-700'
+
+                      const epTmdbBadgeStyle = getRatingStyle(
+                        ep.vote_average ? Number(ep.vote_average.toFixed(1)) : null
+                      )
+
+                      return (
+                        <div
+                          key={ep.id}
+                          className={`border rounded-xl p-4 transition-all duration-200 flex flex-col sm:flex-row gap-4 items-start sm:items-center group ${epCardStyle}`}
+                        >
+                          {/* Episode Still Image */}
+                          <div className="relative w-full sm:w-52 h-32 flex-none rounded-lg overflow-hidden bg-zinc-950 border border-zinc-800">
+                            {ep.still_path ? (
+                              <img
+                                src={`https://image.tmdb.org/t/p/w300${ep.still_path}`}
+                                alt={ep.name}
+                                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                              />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center text-xs text-zinc-600 font-medium">
+                                No Thumbnail
+                              </div>
+                            )}
+                            <span className="absolute bottom-2 left-2 bg-black/80 backdrop-blur-md px-2 py-0.5 rounded text-[10px] font-mono font-bold text-sky-400 border border-white/10">
+                              E{ep.episode_number < 10 ? `0${ep.episode_number}` : ep.episode_number}
+                            </span>
+                          </div>
+
+                          {/* Episode Details */}
+                          <div className="flex flex-col justify-between flex-grow overflow-hidden w-full h-full min-h-[110px]">
+                            
+                            {/* Top Row: Title + Rate Button */}
+                            <div className="flex items-start justify-between gap-3 mb-1.5">
+                              <h4 className="font-bold text-base text-white group-hover:text-sky-400 transition-colors line-clamp-1">
+                                {ep.episode_number}. {ep.name}
+                              </h4>
+
+                              {/* TOP RIGHT RATE BUTTON */}
+                              <button
+                                onClick={() => handleOpenEpModal(ep)}
+                                className="px-3 py-1 rounded-lg bg-zinc-800/90 hover:bg-zinc-700 text-xs font-bold text-white border border-white/10 transition shrink-0 shadow-sm flex items-center gap-1"
+                              >
+                                {epUserRating !== null ? (
+                                  <span className="text-amber-300 font-black">⭐ {epUserRating.toFixed(1)}</span>
+                                ) : (
+                                  <span>+ Rate</span>
+                                )}
+                              </button>
+                            </div>
+
+                            {/* Overview */}
+                            <p className="text-xs sm:text-sm text-zinc-300 line-clamp-2 sm:line-clamp-3 leading-relaxed mb-3">
+                              {ep.overview || 'No description available for this episode.'}
+                            </p>
+
+                            {/* Bottom Row: Air Date, Runtime + Bottom Right Color-Coded TMDB Rating */}
+                            <div className="flex items-center justify-between gap-2 text-xs font-medium mt-auto pt-1">
+                              <div className="flex items-center gap-4 text-zinc-400">
+                                {ep.air_date && <span>📅 {ep.air_date}</span>}
+                                {ep.runtime && <span>⏱️ {ep.runtime} min</span>}
+                              </div>
+
+                              {/* BOTTOM RIGHT COLOR-CODED TMDB RATING */}
+                              {ep.vote_average > 0 ? (
+                                <span className={`text-[11px] font-bold px-2 py-0.5 rounded border shrink-0 ${epTmdbBadgeStyle}`}>
+                                  TMDB: {ep.vote_average.toFixed(1)}
+                                </span>
+                              ) : (
+                                <span className="text-[11px] text-zinc-500 font-medium shrink-0">
+                                  TMDB: N/A
+                                </span>
+                              )}
+                            </div>
+
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center py-12 text-zinc-500 italic bg-zinc-900/30 rounded-xl border border-zinc-800">
+                  No episode details found for this season.
+                </div>
+              )}
+
+              {/* ========================================================= */}
+              {/* YOUR RATED EPISODES FOR THIS SHOW */}
+              {/* ========================================================= */}
+              {ratedShowEpisodes.length > 0 && (
+                <div className="mt-12">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+                    <h3 className="text-xl font-black text-white flex items-center gap-2">
+                      ⭐ Your Rated Episodes
+                    </h3>
+
+                    <select
+                      value={episodeSort}
+                      onChange={(e) => setEpisodeSort(e.target.value as typeof episodeSort)}
+                      className="bg-zinc-900 border border-zinc-700 text-white text-xs font-semibold rounded-lg px-3 py-2 focus:outline-none focus:border-sky-500 cursor-pointer"
+                    >
+                      {episodeSortOptions.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          Sort: {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-thin scrollbar-thumb-zinc-800">
+                    {sortedRatedEpisodes.map((ep: any) => {
+                      const stillUrl = ep.poster_path
+                        ? ep.poster_path.startsWith('http')
+                          ? ep.poster_path
+                          : `https://image.tmdb.org/t/p/w300${ep.poster_path}`
+                        : null
+
+                      return (
+                        <button
+                          key={ep.tmdb_id}
+                          onClick={() => setSelectedSeason(ep.season_number)}
+                          className="flex-none w-56 text-left group focus:outline-none"
+                        >
+                          <div className="relative aspect-video w-full rounded-xl overflow-hidden border border-zinc-800 bg-zinc-900 mb-2">
+                            {stillUrl ? (
+                              <img
+                                src={stillUrl}
+                                alt={ep.title}
+                                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                              />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center text-xs text-zinc-500">
+                                No Thumbnail
+                              </div>
+                            )}
+                            <span className="absolute bottom-2 left-2 bg-black/80 backdrop-blur-md px-2 py-0.5 rounded text-[10px] font-mono font-bold text-sky-400 border border-white/10">
+                              S{ep.season_number}E{ep.episode_number < 10 ? `0${ep.episode_number}` : ep.episode_number}
+                            </span>
+                            <div className="absolute top-2 right-2 bg-black/90 border border-amber-300/80 px-2 py-0.5 rounded-md text-[11px] font-black text-amber-300 shadow-lg backdrop-blur-md">
+                              ⭐ {Number(ep.user_rating).toFixed(1)}
+                            </div>
+                          </div>
+                          <p className="font-semibold text-sm truncate text-white group-hover:text-sky-400 transition-colors">
+                            {ep.title}
+                          </p>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </div>
       )}

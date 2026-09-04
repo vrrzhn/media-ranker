@@ -80,7 +80,9 @@ function MediaCard({ movie }: MediaCardProps) {
   
   let targetRoute = 'movie'
   if (isTv) targetRoute = 'tv'
-  if (isEpisode) targetRoute = 'episode'
+  if (isEpisode) targetRoute = 'tv'
+
+  const linkId = isEpisode ? movie.show_id : (movie.tmdb_id || movie.id)
 
   const title = movie.title || movie.name || 'Untitled'
   const releaseYear = getReleaseYear(movie)
@@ -103,7 +105,7 @@ function MediaCard({ movie }: MediaCardProps) {
 
   return (
     <Link
-      href={`/${targetRoute}/${movie.tmdb_id || movie.id}`}
+      href={`/${targetRoute}/${isEpisode ? movie.show_id : (movie.tmdb_id || movie.id)}`}
       className="flex-none w-36 sm:w-44 group transition-transform duration-300 hover:scale-105 focus:outline-none focus:scale-105"
     >
       <div className="relative aspect-[2/3] w-full rounded-2xl overflow-hidden border border-zinc-800/80 bg-zinc-900 shadow-xl mb-2">
@@ -648,7 +650,8 @@ export default function HomePage() {
                       const isHovered = index === hoveredTopTenIndex
                       const isTv = media.type === 'tv'
                       const isEpisode = media.type === 'episode'
-                      const targetRoute = isEpisode ? 'episode' : isTv ? 'tv' : 'movie'
+                      const targetRoute = isTv || isEpisode ? 'tv' : 'movie'
+                      const linkId = isEpisode ? media.show_id : (media.tmdb_id || media.id)
                       
                       const releaseYear = getReleaseYear(media)
 
@@ -661,7 +664,7 @@ export default function HomePage() {
                       return (
                         <Link
                           key={media.id}
-                          href={`/${targetRoute}/${media.tmdb_id || media.id}`}
+                          href={`/${targetRoute}/${isEpisode ? media.show_id : (media.tmdb_id || media.id)}`}
                           onMouseEnter={() => setHoveredTopTenIndex(index)}
                           onFocus={() => setHoveredTopTenIndex(index)}
                           className="flex-none flex items-center gap-2 group/card cursor-pointer focus:outline-none"
